@@ -18,9 +18,8 @@ case "$OS" in
     ;;
   Darwin)
     case "$ARCH" in
-      arm64)   ARTIFACT="girlfriend-darwin-arm64" ;;
-      x86_64)  ARTIFACT="girlfriend-darwin-x64" ;;
-      *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+      arm64)  ARTIFACT="girlfriend-darwin-arm64" ;;
+      *) echo "Unsupported architecture: $ARCH (only Apple Silicon supported on macOS)" >&2; exit 1 ;;
     esac
     ;;
   *)

@@ -23,8 +23,6 @@ jobs:
             artifact: girlfriend-linux-x64
           - runner: macos-latest
             artifact: girlfriend-darwin-arm64
-          - runner: macos-13
-            artifact: girlfriend-darwin-x64
 
     steps:
       - uses: actions/checkout@v4
@@ -106,8 +104,6 @@ jobs:
             dist/girlfriend-linux-x64.asc
             dist/girlfriend-darwin-arm64
             dist/girlfriend-darwin-arm64.asc
-            dist/girlfriend-darwin-x64
-            dist/girlfriend-darwin-x64.asc
             dist/SHA256SUMS
             dist/SHA256SUMS.asc
             install.sh
