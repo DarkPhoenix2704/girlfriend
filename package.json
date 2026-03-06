@@ -1,5 +1,6 @@
 {
-  "name": "girlfriend",  "module": "index.ts",
+  "name": "girlfriend",
+  "module": "index.ts",
   "type": "module",
   "private": true,
   "devDependencies": {
@@ -10,6 +11,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
-    "@inquirer/prompts": "^8.3.0"
+    "@opentui/core": "^0.1.86"
   }
 }

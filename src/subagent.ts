@@ -69,15 +69,25 @@ export async function runSubagent(
   const readFiles = new Set<string>();
   let result = "";
 
-  // Simplified agent loop for subagents (no compaction, no retry complexity)
+  const MAX_RETRIES = 5;
+  const BASE_MS = 500;
+
+  async function apiCall() {
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        return await client.messages.create({ model, max_tokens: 8096, system: systemPrompt, tools: activeTools as Anthropic.Tool[], messages });
+      } catch (err: unknown) {
+        const status = (err as { status?: number }).status;
+        const retryable = status === 429 || status === 529 || status === 500 || status === 503;
+        if (!retryable || attempt === MAX_RETRIES) throw err;
+        await new Promise(r => setTimeout(r, Math.min(BASE_MS * Math.pow(2, attempt), 16_000)));
+      }
+    }
+    throw new Error("unreachable");
+  }
+
   for (let turn = 0; turn < 50; turn++) {
-    const response = await client.messages.create({
-      model,
-      max_tokens: 8096,
-      system: systemPrompt,
-      tools: activeTools as Anthropic.Tool[],
-      messages,
-    });
+    const response = await apiCall();
 
     const textBlocks = response.content.filter(
       (b): b is Anthropic.TextBlock => b.type === "text"
@@ -99,7 +109,7 @@ export async function runSubagent(
 
     const concurrentResults = await Promise.all(
       concurrent.map(async (block) => {
-        const res = await executeTool(block.name, block.input, readFiles);
+        const res = await executeTool(block.name, block.input, readFiles, options.cwd);
         return { type: "tool_result" as const, tool_use_id: block.id, content: res.content, is_error: res.is_error };
       })
     );
@@ -115,34 +125,6 @@ export async function runSubagent(
 
   return result;
 }
-
-/**
- * Task tool schema — accepts description and prompt, runs a subagent.
- */
-export const TASK_TOOL_SCHEMA: Anthropic.Tool = {
-  name: "Task",
-  description:
-    "Launch a subagent to complete a focused, self-contained task. Use for long-running, independent work that shouldn't clutter the main context. The subagent runs its own agent loop with restricted tools and returns a summary when done.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      description: {
-        type: "string",
-        description: "Short label for the task (shown in UI)",
-      },
-      prompt: {
-        type: "string",
-        description: "Full task description sent to the subagent",
-      },
-      subagent_type: {
-        type: "string",
-        description:
-          "Named subagent definition to use (must match a key in your agents config). Use 'Explore' for codebase research.",
-      },
-    },
-    required: ["description", "prompt"],
-  },
-};
 
 /**
  * Creates a Task tool executor bound to a set of subagent definitions.

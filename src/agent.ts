@@ -36,6 +36,14 @@ export interface AgentOptions {
   onToolResult?: (name: string, result: string) => void;
   /** Called when compaction occurs */
   onCompact?: (summary: string) => void;
+  /** Called after each API response with current rate-limit headers */
+  onRateLimit?: (info: RateLimitInfo) => void;
+}
+
+export interface RateLimitInfo {
+  requestsRemaining: number | null;
+  inputTokensRemaining: number | null;
+  outputTokensRemaining: number | null;
 }
 
 export interface AgentResult {
@@ -98,15 +106,22 @@ export async function runAgent(
     model,
   });
 
-  // Inject CLAUDE.md as <system-reminder> before the first user message only
+  // Inject CLAUDE.md on the first turn of a session, and again after compaction
+  // (compaction produces a single summary message with no prior CLAUDE.md injection).
+  // We detect "already injected" by checking if any prior user message contains the wrapper tag.
+  const alreadyInjected = (options.history ?? []).some(
+    (m) => m.role === "user" && typeof m.content === "string" && m.content.includes("<system-reminder>")
+      || (Array.isArray(m.content) && m.content.some(
+        (b) => "text" in b && typeof (b as { text: string }).text === "string" && (b as { text: string }).text.includes("<system-reminder>")
+      ))
+  );
   let userContent = prompt;
-  if (options.claudeMd && !options.history?.length) {
+  if (options.claudeMd && !alreadyInjected) {
     userContent =
       wrapClaudeMd(options.claudeMd, options.claudeMdPath ?? "CLAUDE.md") +
       "\n" +
       prompt;
   }
-
   // Start from prior history if provided (multi-turn chat)
   const messages: Anthropic.MessageParam[] = [
     ...(options.history ?? []),
@@ -141,6 +156,8 @@ export async function runAgent(
       messages.length = 0;
       messages.push(...compactionResult.messages);
       compacted = true;
+      totalInputTokens = 0;
+      totalOutputTokens = 0;
       options.onCompact?.(compactionResult.summary ?? "");
     }
 
@@ -165,6 +182,14 @@ export async function runAgent(
         });
 
         response = await stream.finalMessage();
+        if (options.onRateLimit) {
+          const h = stream.response?.headers;
+          options.onRateLimit({
+            requestsRemaining:    h ? parseInt(h.get("anthropic-ratelimit-requests-remaining") ?? "") || null : null,
+            inputTokensRemaining: h ? parseInt(h.get("anthropic-ratelimit-input-tokens-remaining") ?? "") || null : null,
+            outputTokensRemaining:h ? parseInt(h.get("anthropic-ratelimit-output-tokens-remaining") ?? "") || null : null,
+          });
+        }
         break;
       } catch (err: unknown) {
         finalText = ""; // reset on retry so we don't double-stream

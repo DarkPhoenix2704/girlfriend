@@ -1,9 +1,7 @@
 // Tool implementations — Read, Write, Edit, Bash, Glob, Grep, WebFetch, Task
 
-import { readFile, writeFile, readdir } from "fs/promises";
-import { existsSync, statSync } from "fs";
-import { resolve, dirname, relative, join } from "path";
-import { spawn } from "child_process";
+import { existsSync, statSync, mkdirSync } from "fs";
+import { resolve, dirname } from "path";
 import type { Tool } from "@anthropic-ai/sdk/resources/messages";
 
 // ─── Tool name constants ───────────────────────────────────────────────────────
@@ -184,6 +182,12 @@ export type ToolResult = { content: string; is_error?: boolean };
 // Read-only tools safe to run concurrently; mutating tools run sequentially
 export const CONCURRENT_SAFE_TOOLS = [TOOL_READ, TOOL_GLOB, TOOL_GREP, TOOL_WEB_FETCH];
 
+// Task executor registered at startup by tui.ts / index.ts
+let _taskExecutor: ((input: ToolInput, cwd: string) => Promise<ToolResult>) | null = null;
+export function setTaskExecutor(fn: (input: ToolInput, cwd: string) => Promise<ToolResult>) {
+  _taskExecutor = fn;
+}
+
 export async function executeTool(
   name: string,
   input: unknown,
@@ -192,13 +196,12 @@ export async function executeTool(
 ): Promise<ToolResult> {
   const typedInput = (input ?? {}) as ToolInput;
   // Resolve relative file_path / path fields against cwd
-  if (typedInput.file_path && typeof typedInput.file_path === "string" && !resolve(typedInput.file_path).startsWith("/")) {
+  if (typedInput.file_path && typeof typedInput.file_path === "string" && !typedInput.file_path.startsWith("/")) {
     typedInput.file_path = resolve(cwd, typedInput.file_path);
   }
-  if (typedInput.path && typeof typedInput.path === "string" && !resolve(typedInput.path).startsWith("/")) {
+  if (typedInput.path && typeof typedInput.path === "string" && !typedInput.path.startsWith("/")) {
     typedInput.path = resolve(cwd, typedInput.path);
-  }
-  try {
+  }  try {
     switch (name) {
       case TOOL_READ:    return await toolRead(typedInput, readFiles);
       case TOOL_WRITE:   return await toolWrite(typedInput);
@@ -207,6 +210,9 @@ export async function executeTool(
       case TOOL_GLOB:    return await toolGlob(typedInput, cwd);
       case TOOL_GREP:    return await toolGrep(typedInput, cwd);
       case TOOL_WEB_FETCH: return await toolWebFetch(typedInput);
+      case TOOL_TASK:
+        if (!_taskExecutor) return { content: "<tool_use_error>Task executor not configured</tool_use_error>", is_error: true };
+        return await _taskExecutor(typedInput, cwd);
       default:
         return { content: `<tool_use_error>Unknown tool: ${name}</tool_use_error>`, is_error: true };
     }
@@ -237,7 +243,7 @@ async function toolRead(input: ToolInput, readFiles: Set<string>): Promise<ToolR
   }
 
   readFiles.add(filePath);
-  const raw = await readFile(filePath, "utf8");
+  const raw = await Bun.file(filePath).text();
 
   if (!raw) {
     return { content: `(file is empty)` };
@@ -254,10 +260,9 @@ async function toolRead(input: ToolInput, readFiles: Set<string>): Promise<ToolR
 
   for (let i = 0; i < slice.length; i++) {
     const lineNum = startIdx + i + 1;
-    const line = (slice[i] ?? "").length > maxLineLen
-      ? (slice[i] ?? "").slice(0, maxLineLen) + "…"
-      : (slice[i] ?? "");
-    const entry = `${String(lineNum).padStart(6)}\t${line}`;
+    const line = (slice[i] ?? "");
+    const truncated = line.length > maxLineLen ? line.slice(0, maxLineLen) + "…" : line;
+    const entry = `${String(lineNum).padStart(6)}\t${truncated}`;
     chars += entry.length + 1;
     if (chars > READ_CHAR_LIMIT) break;
     numbered.push(entry);
@@ -281,7 +286,6 @@ async function toolWrite(input: ToolInput): Promise<ToolResult> {
   const content = input.content as string;
 
   const dir = dirname(filePath);
-  const { mkdirSync } = await import("fs");
   mkdirSync(dir, { recursive: true });
   await Bun.write(Bun.file(filePath), content);
 
@@ -306,7 +310,7 @@ async function toolEdit(input: ToolInput, readFiles: Set<string>): Promise<ToolR
     return { content: `<tool_use_error>File not found: ${filePath}</tool_use_error>`, is_error: true };
   }
 
-  const original = await readFile(filePath, "utf8");
+  const original = await Bun.file(filePath).text();
 
   if (!original.includes(oldString)) {
     // Try with trailing newline stripped
@@ -335,15 +339,9 @@ async function toolEdit(input: ToolInput, readFiles: Set<string>): Promise<ToolR
   if (replaceAll) {
     updated = original.replaceAll(oldString, newString);
   } else {
-    // Handle trailing newline edge case
-    if (newString !== "" && !oldString.endsWith("\n") && original.includes(oldString + "\n")) {
-      updated = original.replace(oldString + "\n", newString);
-    } else {
-      updated = original.replace(oldString, newString);
-    }
+    updated = original.replace(oldString, newString);
   }
-
-  await writeFile(filePath, updated, "utf8");
+  await Bun.write(filePath, updated);
   readFiles.add(filePath); // mark as read so further edits are allowed
 
   const linesChanged = Math.abs(newString.split("\n").length - oldString.split("\n").length);
@@ -356,50 +354,37 @@ async function toolBash(input: ToolInput, cwd: string = process.cwd()): Promise<
   const command = input.command as string;
   const timeout = Math.min((input.timeout as number) ?? 120_000, 120_000);
 
-  return new Promise((resolve) => {
-    const shell = process.env.SHELL || "bash";
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-
-    const proc = spawn(shell, ["-c", command], {
-      env: { ...process.env },
+  try {
+    const proc = Bun.spawn([process.env.SHELL || "bash", "-c", command], {
       cwd,
+      env: { ...process.env },
+      stdout: "pipe",
+      stderr: "pipe",
     });
 
-    const timer = setTimeout(() => {
-      timedOut = true;
-      proc.kill("SIGTERM");
-    }, timeout);
+    const timer = setTimeout(() => proc.kill(), timeout);
 
-    proc.stdout.on("data", (d) => (stdout += d.toString()));
-    proc.stderr.on("data", (d) => (stderr += d.toString()));
+    const [stdoutBuf, stderrBuf, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    clearTimeout(timer);
 
-    proc.on("close", (code) => {
-      clearTimeout(timer);
-      if (timedOut) {
-        resolve({ content: `<tool_use_error>Command timed out after ${timeout}ms: ${command}</tool_use_error>`, is_error: true });
-        return;
-      }
+    const MAX_OUTPUT = 100_000;
+    let output = stdoutBuf;
+    if (stderrBuf) output += (output ? "\n" : "") + `[stderr]\n${stderrBuf}`;
+    if (output.length > MAX_OUTPUT) {
+      output = output.slice(0, MAX_OUTPUT) + `\n\n[Output truncated at ${MAX_OUTPUT} chars. ${output.length - MAX_OUTPUT} more chars omitted.]`;
+    }
 
-      const MAX_OUTPUT = 100_000; // 100KB cap for context window sanity
-      let output = stdout;
-      if (stderr) output += (output ? "\n" : "") + `[stderr]\n${stderr}`;
-      if (output.length > MAX_OUTPUT) {
-        output = output.slice(0, MAX_OUTPUT) + `\n\n[Output truncated at ${MAX_OUTPUT} chars. ${output.length - MAX_OUTPUT} more chars omitted.]`;
-      }
-
-      resolve({
-        content: output || `[Command completed with exit code ${code} and no output]`,
-        is_error: code !== 0,
-      });
-    });
-
-    proc.on("error", (err) => {
-      clearTimeout(timer);
-      resolve({ content: `<tool_use_error>Failed to spawn process: ${err.message}</tool_use_error>`, is_error: true });
-    });
-  });
+    return {
+      content: output || `[Command completed with exit code ${exitCode} and no output]`,
+      is_error: exitCode !== 0,
+    };
+  } catch (err) {
+    return { content: `<tool_use_error>Failed to run command: ${err instanceof Error ? err.message : String(err)}</tool_use_error>`, is_error: true };
+  }
 }
 
 // ─── Glob ──────────────────────────────────────────────────────────────────────
@@ -470,7 +455,7 @@ async function toolGrep(input: ToolInput, cwd: string = process.cwd()): Promise<
   for (const file of files) {
     let content: string;
     try {
-      content = await readFile(file, "utf8");
+      content = await Bun.file(file).text();
     } catch {
       continue;
     }

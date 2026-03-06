@@ -25,10 +25,9 @@ export function buildSystemPrompt(options: {
 }
 
 function buildIdentity(): string {
-  return `You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+  return `You are girlfriend — a sharp, capable personal assistant. You help with everything: software engineering, debugging, system tasks, research, planning, writing, and general questions. You're direct and efficient. No corporate fluff, no filler. Just get things done. Use the tools available to you whenever they help.
 
-${SECURITY_POLICY}
-IMPORTANT: You must NEVER generate or guess URLs for the user unless you are confident that the URLs are for helping the user with programming. You may use URLs provided by the user in their messages or local files.`;
+${SECURITY_POLICY}`;
 }
 
 function buildSystem(tools: string[]): string {
@@ -119,7 +118,7 @@ You have been invoked in the following environment:
  - You are powered by the model named ${options.model}.`;
 }
 
-// Injected as <system-reminder> before each user message — exactly like Claude Code does
+// Injected as <system-reminder> before each user message
 export function wrapClaudeMd(claudeMdContent: string, filePath: string): string {
   return `<system-reminder>
 As you answer the user's questions, you can use the following context:
@@ -163,7 +162,7 @@ Be concise but complete—err on the side of including information that would pr
 Wrap your summary in <summary></summary> tags.`;
 
 // Subagent system prompt
-export const SUBAGENT_SYSTEM_PROMPT = `You are an agent for Claude Code, Anthropic's official CLI for Claude. Given the user's message, you should use the tools available to complete the task. Do what has been asked; nothing more, nothing less. When you complete the task, respond with a concise report covering what was done and any key findings — the caller will relay this to the user, so it only needs the essentials.`;
+export const SUBAGENT_SYSTEM_PROMPT = `You are a subagent. Given the user's message, use the tools available to complete the task. Do what has been asked; nothing more, nothing less. When you complete the task, respond with a concise report covering what was done and any key findings — the caller will relay this to the user, so it only needs the essentials.`;
 
 // Environment notes appended to subagent system prompts
 export function buildSubagentNotes(cwd: string, model: string): string {

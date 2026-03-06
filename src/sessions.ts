@@ -7,8 +7,8 @@ import { mkdirSync } from "fs";
 import type Anthropic from "@anthropic-ai/sdk";
 
 // DB lives in ~/.girlfriend/sessions.db
-const DB_DIR = join(process.env.HOME ?? ".", ".girlfriend");const DB_PATH = join(DB_DIR, "sessions.db");
-
+const DB_DIR = join(process.env.HOME ?? ".", ".girlfriend");
+const DB_PATH = join(DB_DIR, "sessions.db");
 export interface Session {
   id: number;
   name: string;
