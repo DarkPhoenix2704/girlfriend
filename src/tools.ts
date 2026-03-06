@@ -520,8 +520,7 @@ async function toolWebFetch(input: ToolInput): Promise<ToolResult> {
   const url = input.url as string;
 
   const resp = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; agent-claw/1.0)" },
-    signal: AbortSignal.timeout(30_000),
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; girlfriend/1.0)" },    signal: AbortSignal.timeout(30_000),
   });
 
   if (!resp.ok) {

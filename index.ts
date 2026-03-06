@@ -1,5 +1,4 @@
-// agent-claw: Interactive streaming agent REPL with persistent sessions
-//
+// girlfriend: Interactive streaming agent REPL with persistent sessions//
 // Usage:
 //   bun index.ts                     → interactive session picker
 //   bun index.ts --new [name]        → start a named new session
@@ -152,7 +151,7 @@ let history = loadMessages(sessionId);
 let readFiles = loadReadFiles(sessionId);
 
 function printSessionHeader() {
-  console.log(`\n${bold("agent-claw")} ${dim(`· #${sessionId} · ${session.name} · ${history.length} messages`)}`);
+  console.log(`\n${bold("girlfriend")} ${dim(`· #${sessionId} · ${session.name} · ${history.length} messages`)}`);
   if (claudeMdFile) console.log(dim(`CLAUDE.md: ${claudeMdFile.path}`));
   console.log(dim('type "exit" to quit · /sessions /new /rename /reset\n'));
 }

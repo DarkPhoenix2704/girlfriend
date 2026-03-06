@@ -1,6 +1,5 @@
 {
-  "name": "agent-claw",
-  "module": "index.ts",
+  "name": "girlfriend",  "module": "index.ts",
   "type": "module",
   "private": true,
   "devDependencies": {

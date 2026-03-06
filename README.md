@@ -1,5 +1,4 @@
-# agent-claw
-
+# girlfriend
 To install dependencies:
 
 ```bash
