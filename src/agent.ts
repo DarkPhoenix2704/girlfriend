@@ -134,6 +134,9 @@ export async function runAgent(
 
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  // lastContextSize tracks the actual context window usage (last turn's input_tokens),
+  // NOT a cumulative sum — cumulative would grow O(n²) since every turn re-counts all history.
+  let lastContextSize = 0;
   let turns = 0;
   let compacted = false;
   let finalText = "";
@@ -144,19 +147,19 @@ export async function runAgent(
       break;
     }
 
-    // Maybe compact before API call
-    const totalTokens = totalInputTokens + totalOutputTokens;
+    // Compact when the actual context size approaches the limit
     const compactionResult = await maybeCompact(
       client,
       messages,
       systemPrompt,
       model,
-      totalTokens
+      lastContextSize
     );
     if (compactionResult.compacted) {
       messages.length = 0;
       messages.push(...compactionResult.messages);
       compacted = true;
+      lastContextSize = 0;
       options.onCompact?.(compactionResult.summary ?? "");
     }
 
@@ -220,6 +223,7 @@ export async function runAgent(
           compacted = true;
           totalInputTokens = 0;
           totalOutputTokens = 0;
+          lastContextSize = 0;
           options.onCompact?.(summary);
         }
       },
@@ -227,6 +231,8 @@ export async function runAgent(
 
     totalInputTokens += response.usage.input_tokens;
     totalOutputTokens += response.usage.output_tokens;
+    // Track actual context size for compaction decisions (not cumulative)
+    lastContextSize = response.usage.input_tokens + response.usage.output_tokens;
     turns++;
 
     const toolUseBlocks = response.content.filter(

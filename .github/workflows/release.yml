@@ -21,8 +21,10 @@ jobs:
         include:
           - runner: ubuntu-latest
             artifact: girlfriend-linux-x64
+            npm_pkg: gf-uwu-linux-x64
           - runner: macos-latest
             artifact: girlfriend-darwin-arm64
+            npm_pkg: gf-uwu-darwin-arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -67,7 +69,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout first so nothing overwrites the downloaded artifacts later
       - uses: actions/checkout@v4
         with:
           sparse-checkout: |
@@ -116,16 +117,44 @@ jobs:
             dist/SHA256SUMS.asc
             install.sh
 
-      - name: Publish to npm
-        working-directory: npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Set version
         run: |
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
-          # Create a bin/ stub so npm doesn't warn — postinstall replaces it with the real binary
-          mkdir -p bin
-          printf '#!/bin/sh\necho "Run: npm install gf-uwu to download the binary"\nexit 1\n' > bin/girlfriend
-          chmod +x bin/girlfriend
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Publish gf-uwu-linux-x64
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cp dist/girlfriend-linux-x64 npm/packages/gf-uwu-linux-x64/bin/girlfriend
+          chmod +x npm/packages/gf-uwu-linux-x64/bin/girlfriend
+          cd npm/packages/gf-uwu-linux-x64
+          npm version "$VERSION" --no-git-tag-version
+          npm publish --access public
+
+      - name: Publish gf-uwu-darwin-arm64
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cp dist/girlfriend-darwin-arm64 npm/packages/gf-uwu-darwin-arm64/bin/girlfriend
+          chmod +x npm/packages/gf-uwu-darwin-arm64/bin/girlfriend
+          cd npm/packages/gf-uwu-darwin-arm64
+          npm version "$VERSION" --no-git-tag-version
+          npm publish --access public
+
+      - name: Publish gf-uwu
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd npm
+          # Pin optionalDependencies to the exact release version
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.optionalDependencies['gf-uwu-linux-x64'] = process.env.VERSION;
+            pkg.optionalDependencies['gf-uwu-darwin-arm64'] = process.env.VERSION;
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          "
           npm version "$VERSION" --no-git-tag-version
           npm publish --access public

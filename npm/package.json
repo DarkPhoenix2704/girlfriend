@@ -11,15 +11,15 @@
   "license": "MIT",
   "author": "DarkPhoenix2704",
   "bin": {
-    "girlfriend": "bin/girlfriend"
-  },
-  "scripts": {
-    "postinstall": "node install.js"
+    "girlfriend": "run.js"
   },
   "files": [
-    "install.js",
-    "bin/"
+    "run.js"
   ],
+  "optionalDependencies": {
+    "gf-uwu-linux-x64": "0.0.0",
+    "gf-uwu-darwin-arm64": "0.0.0"
+  },
   "engines": {
     "node": ">=18"
   }
