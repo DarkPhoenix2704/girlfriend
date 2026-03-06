@@ -201,7 +201,8 @@ export async function executeTool(
   }
   if (typedInput.path && typeof typedInput.path === "string" && !typedInput.path.startsWith("/")) {
     typedInput.path = resolve(cwd, typedInput.path);
-  }  try {
+  }
+  try {
     switch (name) {
       case TOOL_READ:    return await toolRead(typedInput, readFiles);
       case TOOL_WRITE:   return await toolWrite(typedInput);
@@ -344,8 +345,9 @@ async function toolEdit(input: ToolInput, readFiles: Set<string>): Promise<ToolR
   await Bun.write(filePath, updated);
   readFiles.add(filePath); // mark as read so further edits are allowed
 
-  const linesChanged = Math.abs(newString.split("\n").length - oldString.split("\n").length);
-  return { content: `File edited successfully.\n${filePath}: replaced ${replaceAll ? "all occurrences of" : ""} the specified string${linesChanged > 0 ? ` (${linesChanged > 0 ? "+" : ""}${newString.split("\n").length - oldString.split("\n").length} lines)` : ""}` };
+  const lineDiff = newString.split("\n").length - oldString.split("\n").length;
+  const linesChanged = Math.abs(lineDiff);
+  return { content: `File edited successfully.\n${filePath}: replaced ${replaceAll ? "all occurrences of" : ""} the specified string${linesChanged > 0 ? ` (${lineDiff > 0 ? "+" : ""}${lineDiff} lines)` : ""}` };
 }
 
 // ─── Bash ──────────────────────────────────────────────────────────────────────

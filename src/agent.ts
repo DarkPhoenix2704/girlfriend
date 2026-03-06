@@ -4,6 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { buildSystemPrompt, wrapClaudeMd } from "./prompts.ts";
 import { TOOL_SCHEMAS, executeTool, CONCURRENT_SAFE_TOOLS } from "./tools.ts";
 import { maybeCompact } from "./compaction.ts";
+import { withRetry } from "./retry.ts";
 
 export interface AgentOptions {
   /** Anthropic API client */
@@ -31,9 +32,9 @@ export interface AgentOptions {
   /** Called on each assistant message chunk (streaming) */
   onText?: (text: string) => void;
   /** Called when a tool is about to be executed */
-  onToolUse?: (name: string, input: unknown) => void;
+  onToolUse?: (name: string, input: unknown, id: string) => void;
   /** Called with each tool result */
-  onToolResult?: (name: string, result: string) => void;
+  onToolResult?: (name: string, result: string, id: string) => void;
   /** Called when compaction occurs */
   onCompact?: (summary: string) => void;
   /** Called after each API response with current rate-limit headers */
@@ -41,9 +42,16 @@ export interface AgentOptions {
 }
 
 export interface RateLimitInfo {
+  // Standard API key limits (per-minute)
   requestsRemaining: number | null;
   inputTokensRemaining: number | null;
   outputTokensRemaining: number | null;
+  // OAuth unified limits (utilization 0–1, reset = unix timestamp)
+  unified5hUtilization: number | null;
+  unified5hReset: number | null;
+  unified7dUtilization: number | null;
+  unifiedStatus: string | null;
+  unifiedFallback: string | null;
 }
 
 export interface AgentResult {
@@ -63,18 +71,7 @@ export interface AgentResult {
   readFiles: Set<string>;
 }
 
-const MAX_RETRIES = 10;
-const BASE_BACKOFF_MS = 500;    // doubles each attempt, capped at 32s
-const MAX_BACKOFF_MS = 32_000;
 
-function backoffMs(attempt: number): number {
-  const base = Math.min(BASE_BACKOFF_MS * Math.pow(2, attempt), MAX_BACKOFF_MS);
-  return base * (1 + 0.25 * Math.random()); // +25% jitter
-}
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
 
 /**
  * Main agent loop.
@@ -110,10 +107,12 @@ export async function runAgent(
   // (compaction produces a single summary message with no prior CLAUDE.md injection).
   // We detect "already injected" by checking if any prior user message contains the wrapper tag.
   const alreadyInjected = (options.history ?? []).some(
-    (m) => m.role === "user" && typeof m.content === "string" && m.content.includes("<system-reminder>")
-      || (Array.isArray(m.content) && m.content.some(
+    (m) => m.role === "user" && (
+      (typeof m.content === "string" && m.content.includes("<system-reminder>")) ||
+      (Array.isArray(m.content) && m.content.some(
         (b) => "text" in b && typeof (b as { text: string }).text === "string" && (b as { text: string }).text.includes("<system-reminder>")
       ))
+    )
   );
   let userContent = prompt;
   if (options.claudeMd && !alreadyInjected) {
@@ -156,49 +155,44 @@ export async function runAgent(
       messages.length = 0;
       messages.push(...compactionResult.messages);
       compacted = true;
-      totalInputTokens = 0;
-      totalOutputTokens = 0;
       options.onCompact?.(compactionResult.summary ?? "");
     }
 
-    // Reset text accumulator at the start of each turn so only the last turn's text is returned
-    finalText = "";
-
     // Streaming API call with retry
-    let response!: Anthropic.Message;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const stream = client.messages.stream({
-          model,
-          max_tokens: 8096,
-          system: systemPrompt,
-          tools: activeTools as Anthropic.Tool[],
-          messages,
-        });
+    const response = await withRetry(async () => {
+      finalText = "";
+      const stream = client.messages.stream({
+        model,
+        max_tokens: 8192,
+        system: systemPrompt,
+        tools: activeTools as Anthropic.Tool[],
+        messages,
+      });
 
-        stream.on("text", (delta) => {
-          finalText += delta;
-          options.onText?.(delta);
-        });
+      stream.on("text", (delta) => {
+        finalText += delta;
+        options.onText?.(delta);
+      });
 
-        response = await stream.finalMessage();
-        if (options.onRateLimit) {
-          const h = stream.response?.headers;
-          options.onRateLimit({
-            requestsRemaining:    h ? parseInt(h.get("anthropic-ratelimit-requests-remaining") ?? "") || null : null,
-            inputTokensRemaining: h ? parseInt(h.get("anthropic-ratelimit-input-tokens-remaining") ?? "") || null : null,
-            outputTokensRemaining:h ? parseInt(h.get("anthropic-ratelimit-output-tokens-remaining") ?? "") || null : null,
-          });
-        }
-        break;
-      } catch (err: unknown) {
-        finalText = ""; // reset on retry so we don't double-stream
-        const status = (err as { status?: number }).status;
-        const isRetryable = status === 429 || status === 529 || status === 500 || status === 503;
-        if (!isRetryable || attempt === MAX_RETRIES) throw err;
-        await sleep(backoffMs(attempt));
+      const msg = await stream.finalMessage();
+      if (options.onRateLimit) {
+        const h = stream.response?.headers;
+        const num = (k: string) => h ? (parseInt(h.get(k) ?? "") || null) : null;
+        const str = (k: string) => h?.get(k) ?? null;
+        const flt = (k: string) => h ? (parseFloat(h.get(k) ?? "") || null) : null;
+        options.onRateLimit({
+          requestsRemaining:    num("anthropic-ratelimit-requests-remaining"),
+          inputTokensRemaining: num("anthropic-ratelimit-input-tokens-remaining"),
+          outputTokensRemaining:num("anthropic-ratelimit-output-tokens-remaining"),
+          unified5hUtilization: flt("anthropic-ratelimit-unified-5h-utilization"),
+          unified5hReset:       num("anthropic-ratelimit-unified-5h-reset"),
+          unified7dUtilization: flt("anthropic-ratelimit-unified-7d-utilization"),
+          unifiedStatus:        str("anthropic-ratelimit-unified-status"),
+          unifiedFallback:      str("anthropic-ratelimit-unified-fallback"),
+        });
       }
-    }
+      return msg;
+    }, { maxRetries: 10, maxMs: 32_000 });
 
     totalInputTokens += response.usage.input_tokens;
     totalOutputTokens += response.usage.output_tokens;
@@ -222,9 +216,9 @@ export async function runAgent(
 
     const concurrentResults = await Promise.all(
       concurrent.map(async (block) => {
-        options.onToolUse?.(block.name, block.input);
+        options.onToolUse?.(block.name, block.input, block.id);
         const result = await executeTool(block.name, block.input, readFiles, cwd);
-        options.onToolResult?.(block.name, result.content);
+        options.onToolResult?.(block.name, result.content, block.id);
         return {
           type: "tool_result" as const,
           tool_use_id: block.id,
@@ -236,9 +230,9 @@ export async function runAgent(
     toolResults.push(...concurrentResults);
 
     for (const block of sequential) {
-      options.onToolUse?.(block.name, block.input);
+      options.onToolUse?.(block.name, block.input, block.id);
       const result = await executeTool(block.name, block.input, readFiles, cwd);
-      options.onToolResult?.(block.name, result.content);
+      options.onToolResult?.(block.name, result.content, block.id);
       toolResults.push({
         type: "tool_result" as const,
         tool_use_id: block.id,

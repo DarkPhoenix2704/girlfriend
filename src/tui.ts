@@ -245,7 +245,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
       selectBox.focus();
     } catch (err) {
       statusLine.content = `  ✗ ${err instanceof Error ? err.message : String(err)}`;
-      (statusLine as unknown as { fg: string }).fg = RED;
+      statusLine.fg = RED;
     }
 
     selectBox.on(SelectRenderableEvents.ITEM_SELECTED, () => {
@@ -275,8 +275,9 @@ export async function runApp(opts: AppOptions): Promise<void> {
     let savedLength = history.length;
     let pendingCompaction = false;
     let agentRunning = false;
-    let pendingTool: { name: string; inp: Record<string, unknown>; resultText: TextRenderable } | null = null;
+    const pendingTools = new Map<string, TextRenderable>();
     let lastAgentText = "";
+    let headerSessionText: TextRenderable;
 
     // Lazily create session on first message
     function ensureSession(): number {
@@ -285,8 +286,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
       sessionId = createSession(name, currentModel);
       lastChatSessionId = sessionId;
       session = getSession(sessionId)!;
-      const sessionInfoText = headerInfo.getChildren()[2] as TextRenderable;
-      sessionInfoText.content = `#${sessionId}  ·  ${session.name}`;
+      headerSessionText.content = `#${sessionId}  ·  ${session.name}`;
       return sessionId;
     }
 
@@ -330,7 +330,8 @@ export async function runApp(opts: AppOptions): Promise<void> {
     headerInfo.add(new TextRenderable(renderer, { content: "girlfriend", fg: PINK }));
     const headerModelText = new TextRenderable(renderer, { content: currentModel, fg: MUTED });
     headerInfo.add(headerModelText);
-    headerInfo.add(new TextRenderable(renderer, { content: sessionId != null ? `#${sessionId}  ·  ${session!.name}` : "new session", fg: MUTED }));
+    headerSessionText = new TextRenderable(renderer, { content: sessionId != null ? `#${sessionId}  ·  ${session!.name}` : "new session", fg: MUTED });
+    headerInfo.add(headerSessionText);
     header.add(headerEmoji);
     header.add(headerInfo);
     renderer.root.add(header);
@@ -419,11 +420,23 @@ export async function runApp(opts: AppOptions): Promise<void> {
 
     function updateRateLimit(info: RateLimitInfo) {
       const parts: string[] = [];
-      if (info.requestsRemaining !== null) parts.push(`${info.requestsRemaining} req`);
-      if (info.inputTokensRemaining !== null) parts.push(`${(info.inputTokensRemaining / 1000).toFixed(0)}k in-tok`);
-      if (info.outputTokensRemaining !== null) parts.push(`${info.outputTokensRemaining} out-tok`);
+      // OAuth unified limits
+      if (info.unified5hUtilization !== null) {
+        const pct = (info.unified5hUtilization * 100).toFixed(0);
+        const status = info.unifiedStatus === "allowed" ? "" : ` ⚠ ${info.unifiedStatus}`;
+        parts.push(`5h: ${pct}% used${status}`);
+      }
+      if (info.unified7dUtilization !== null)
+        parts.push(`7d: ${(info.unified7dUtilization * 100).toFixed(0)}% used`);
+      if (info.unifiedFallback && info.unifiedFallback !== "available")
+        parts.push(`fallback: ${info.unifiedFallback}`);
+      // Standard API key limits
+      if (info.requestsRemaining !== null) parts.push(`${info.requestsRemaining} req left`);
+      if (info.inputTokensRemaining !== null) parts.push(`${(info.inputTokensRemaining / 1000).toFixed(0)}k in-tok left`);
+      if (info.outputTokensRemaining !== null) parts.push(`${info.outputTokensRemaining} out-tok left`);
+
       if (parts.length > 0) {
-        rateLimitBar.content = `  remaining: ${parts.join("  ·  ")}`;
+        rateLimitBar.content = `  ${parts.join("  ·  ")}`;
         rateLimitBar.height = 1;
       }
     }
@@ -477,10 +490,12 @@ export async function runApp(opts: AppOptions): Promise<void> {
       if (!key.ctrl || key.name !== "y") return;
       key.preventDefault();
       if (!lastAgentText) return;
-      const cmd = process.platform === "darwin" ? "pbcopy" : "xclip -selection clipboard";
-      const proc = Bun.spawn([process.env.SHELL || "bash", "-c", cmd], { stdin: "pipe" });
-      proc.stdin.write(lastAgentText);
-      proc.stdin.end();
+      try {
+        const cmd = process.platform === "darwin" ? "pbcopy" : "xclip -selection clipboard";
+        const proc = Bun.spawn([process.env.SHELL || "bash", "-c", cmd], { stdin: "pipe" });
+        proc.stdin.write(lastAgentText);
+        proc.stdin.end();
+      } catch { /* clipboard unavailable — ignore */ }
     };
 
     renderer._internalKeyInput.onInternal("keypress", ctrlOHandler);
@@ -639,8 +654,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
           const sid = ensureSession();
           renameSession(sid, name);
           session = getSession(sid)!;
-          const sessionInfoText = headerInfo.getChildren()[2] as TextRenderable;
-          sessionInfoText.content = `#${sid}  ·  ${name}`;
+          headerSessionText.content = `#${sid}  ·  ${name}`;
           addLine(`  renamed to "${name}"`);
         }
         return;
@@ -711,7 +725,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
             currentBubble.md.content = currentText;
             bubbleHasContent = true;
           },
-          onToolUse: (name, inp) => {
+          onToolUse: (name, inp, id) => {
             stopSpinner();
             if (bubbleHasContent) {
               currentBubble!.md.streaming = false;
@@ -721,12 +735,13 @@ export async function runApp(opts: AppOptions): Promise<void> {
               currentBubble = null;
             }
             const resultText = addToolCall(name, inp as Record<string, unknown>);
-            pendingTool = { name, inp: inp as Record<string, unknown>, resultText };
+            pendingTools.set(id, resultText);
           },
-          onToolResult: (_name, res) => {
-            if (pendingTool) {
-              fillToolResult(pendingTool.resultText, res);
-              pendingTool = null;
+          onToolResult: (_name, res, id) => {
+            const pt = pendingTools.get(id);
+            if (pt) {
+              fillToolResult(pt, res);
+              pendingTools.delete(id);
             }
             if (bubbleHasContent && currentBubble) {
               currentBubble.md.streaming = false;
@@ -748,8 +763,8 @@ export async function runApp(opts: AppOptions): Promise<void> {
         if (currentBubble) {
           currentBubble.md.streaming = false;
           if (!bubbleHasContent) chat.remove(currentBubble.row.id);
-          else lastAgentText = result.text;
         }
+        lastAgentText = result.text;
         history = result.history;
         readFiles = result.readFiles;
         if (sessionId != null) addTokens(sessionId, result.inputTokens, result.outputTokens);
@@ -757,10 +772,8 @@ export async function runApp(opts: AppOptions): Promise<void> {
         const t = result.inputTokens, o = result.outputTokens;
         addLine(`  ${result.turns} turn${result.turns !== 1 ? "s" : ""}  ·  ${(t / 1000).toFixed(1)}k↑  ${o}↓`);
       } catch (err) {
-        if (pendingTool) {
-          fillToolResult(pendingTool.resultText, "(interrupted)");
-          pendingTool = null;
-        }
+        for (const [, rt] of pendingTools) fillToolResult(rt, "(interrupted)");
+        pendingTools.clear();
         if (currentBubble) {
           currentBubble.md.streaming = false;
           if (!bubbleHasContent) chat.remove(currentBubble.row.id);
