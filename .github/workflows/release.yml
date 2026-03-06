@@ -22,7 +22,7 @@ jobs:
             runner: macos-latest
             artifact: girlfriend-darwin-arm64
           - target: bun-darwin-x64
-            runner: macos-13
+            runner: macos-latest
             artifact: girlfriend-darwin-x64
 
     steps:
