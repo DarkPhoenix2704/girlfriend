@@ -31,6 +31,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 type ContentBlock = Anthropic.TextBlock | Anthropic.ToolUseBlock;
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
+import { checkForUpdates, getUpdateNotice, CURRENT_VERSION } from "./updater.ts";
 
 const PINK   = "#FF79C6";
 const YELLOW = "#F1FA8C";
@@ -58,6 +59,10 @@ export async function runApp(opts: AppOptions): Promise<void> {
     const result = await executor(input);
     return { content: result };
   });
+
+  // Check for updates in the background — never blocks startup
+  checkForUpdates();
+  const updateNotice = getUpdateNotice();
 
   const renderer = await createCliRenderer({ exitOnCtrlC: false, useMouse: true });
   const syntax = SyntaxStyle.create();
@@ -113,8 +118,16 @@ export async function runApp(opts: AppOptions): Promise<void> {
   function mountSessionScreen() {
     clearRoot();
 
-    const header = makeHeader(" girlfriend ");
+    const header = makeHeader(` girlfriend ${CURRENT_VERSION} `);
     renderer.root.add(header);
+
+    if (updateNotice) {
+      const updateBanner = new TextRenderable(renderer, {
+        content: `  update available: ${updateNotice}  →  bunx gf-uwu`,
+        fg: YELLOW, width: "100%", height: 1,
+      });
+      renderer.root.add(updateBanner);
+    }
 
     // Status line (shows pending action / confirmation)
     const statusLine = new TextRenderable(renderer, {
@@ -334,6 +347,11 @@ export async function runApp(opts: AppOptions): Promise<void> {
     headerInfo.add(headerModelText);
     headerSessionText = new TextRenderable(renderer, { content: sessionId != null ? `#${sessionId}  ·  ${session!.name}` : "new session", fg: MUTED });
     headerInfo.add(headerSessionText);
+    if (updateNotice) {
+      headerInfo.add(new TextRenderable(renderer, {
+        content: `update available: ${updateNotice}  →  bunx gf-uwu`, fg: YELLOW,
+      }));
+    }
     header.add(headerEmoji);
     header.add(headerInfo);
     renderer.root.add(header);
