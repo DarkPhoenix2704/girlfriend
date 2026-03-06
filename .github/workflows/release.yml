@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target: bun-linux-x64
+            runner: ubuntu-latest
+            artifact: girlfriend-linux-x64
+          - target: bun-darwin-arm64
+            runner: macos-latest
+            artifact: girlfriend-darwin-arm64
+          - target: bun-darwin-x64
+            runner: macos-13
+            artifact: girlfriend-darwin-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build binary
+        run: |
+          bun build index.ts \
+            --compile \
+            --target ${{ matrix.target }} \
+            --outfile dist/${{ matrix.artifact }}
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Sign binary
+        run: |
+          gpg --batch --yes \
+            --detach-sign \
+            --armor \
+            dist/${{ matrix.artifact }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/${{ matrix.artifact }}
+            dist/${{ matrix.artifact }}.asc
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum girlfriend-* | tee SHA256SUMS
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Sign checksums
+        run: |
+          gpg --batch --yes \
+            --detach-sign \
+            --armor \
+            dist/SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/girlfriend-linux-x64
+            dist/girlfriend-linux-x64.asc
+            dist/girlfriend-darwin-arm64
+            dist/girlfriend-darwin-arm64.asc
+            dist/girlfriend-darwin-x64
+            dist/girlfriend-darwin-x64.asc
+            dist/SHA256SUMS
+            dist/SHA256SUMS.asc
