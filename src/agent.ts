@@ -144,6 +144,9 @@ export async function runAgent(
       options.onCompact?.(compactionResult.summary ?? "");
     }
 
+    // Reset text accumulator at the start of each turn so only the last turn's text is returned
+    finalText = "";
+
     // Streaming API call with retry
     let response!: Anthropic.Message;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -156,7 +159,6 @@ export async function runAgent(
           messages,
         });
 
-        // Stream text deltas to caller in real time
         stream.on("text", (delta) => {
           finalText += delta;
           options.onText?.(delta);
@@ -165,6 +167,7 @@ export async function runAgent(
         response = await stream.finalMessage();
         break;
       } catch (err: unknown) {
+        finalText = ""; // reset on retry so we don't double-stream
         const status = (err as { status?: number }).status;
         const isRetryable = status === 429 || status === 529 || status === 500 || status === 503;
         if (!isRetryable || attempt === MAX_RETRIES) throw err;
@@ -172,7 +175,6 @@ export async function runAgent(
       }
     }
 
-    // Reset finalText — streaming already accumulated it above; don't double-count on retry
     totalInputTokens += response.usage.input_tokens;
     totalOutputTokens += response.usage.output_tokens;
     turns++;
@@ -181,16 +183,11 @@ export async function runAgent(
       (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
     );
 
-    // Append assistant turn to messages
     messages.push({ role: "assistant", content: response.content });
 
-    // Termination: no tool_use → done
     if (toolUseBlocks.length === 0) {
       break;
     }
-
-    // Between turns, reset accumulated text so only the final turn text is returned
-    finalText = "";
 
     // Execute tools — read-only tools run in parallel, mutating tools sequentially
     const toolResults: Anthropic.ToolResultBlockParam[] = [];

@@ -25,9 +25,10 @@ Assume this tool is able to read all files on the machine. If the User provides 
 
 Usage:
 - The file_path parameter must be an absolute path, not a relative path
-- By default, it reads up to 2000 lines starting from the beginning of the file
-- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters
-- Any lines longer than 2000 characters will be truncated
+- By default, it reads up to 250 lines starting from the beginning of the file
+- Output is capped at 20,000 characters. For large files, use offset and limit to page through sections.
+- If the response footer says "N more lines", use offset=<next_line> to continue reading from where you left off.
+- Any lines longer than 500 characters will be truncated
 - Results are returned using cat -n format, with line numbers starting at 1
 - This tool can only read files, not directories. To read a directory, use an ls command via the Bash tool.
 - You can call multiple tools in a single response. It is always better to speculatively read multiple potentially useful files in parallel.
@@ -217,11 +218,14 @@ export async function executeTool(
 
 // ─── Read ──────────────────────────────────────────────────────────────────────
 
+// Hard cap: ~20k chars ≈ ~5k tokens — prevents single Read from blowing up the context
+const READ_CHAR_LIMIT = 20_000;
+
 async function toolRead(input: ToolInput, readFiles: Set<string>): Promise<ToolResult> {
   const filePath = input.file_path as string;
   const offset = (input.offset as number) ?? 1;
-  const limit = (input.limit as number) ?? 2000;
-  const maxLineLen = 2000;
+  const limit = (input.limit as number) ?? 250; // default 250 lines — use offset to page
+  const maxLineLen = 500; // truncate very long lines
 
   if (!existsSync(filePath)) {
     return { content: `File not found: ${filePath}`, is_error: true };
@@ -229,36 +233,45 @@ async function toolRead(input: ToolInput, readFiles: Set<string>): Promise<ToolR
 
   const stat = statSync(filePath);
   if (stat.isDirectory()) {
-    return { content: `<tool_use_error>${filePath} is a directory, not a file. Use Bash tool with 'ls' to list directory contents.</tool_use_error>`, is_error: true };
+    return { content: `<tool_use_error>${filePath} is a directory. Use Bash with 'ls' to list contents.</tool_use_error>`, is_error: true };
   }
 
   readFiles.add(filePath);
   const raw = await readFile(filePath, "utf8");
 
   if (!raw) {
-    return {
-      content: `<system-reminder>This file exists but has no content. No need to read it again unless the user has explicitly added content to it.</system-reminder>`,
-    };
+    return { content: `(file is empty)` };
   }
 
   const lines = raw.split("\n");
+  const totalLines = lines.length;
   const startIdx = Math.max(0, offset - 1);
-  const endIdx = Math.min(lines.length, startIdx + limit);
+  const endIdx = Math.min(totalLines, startIdx + limit);
   const slice = lines.slice(startIdx, endIdx);
 
-  const numbered = slice.map((line, i) => {
-    const lineNum = startIdx + i + 1;
-    const truncated = line.length > maxLineLen ? line.slice(0, maxLineLen) + "..." : line;
-    return `${String(lineNum).padStart(6)}\t${truncated}`;
-  });
+  const numbered: string[] = [];
+  let chars = 0;
 
-  const content = numbered.join("\n");
-  const footer =
-    endIdx < lines.length
-      ? `\n\n[File truncated. ${lines.length - endIdx} more lines. Use offset=${endIdx + 1} to continue reading.]`
+  for (let i = 0; i < slice.length; i++) {
+    const lineNum = startIdx + i + 1;
+    const line = (slice[i] ?? "").length > maxLineLen
+      ? (slice[i] ?? "").slice(0, maxLineLen) + "…"
+      : (slice[i] ?? "");
+    const entry = `${String(lineNum).padStart(6)}\t${line}`;
+    chars += entry.length + 1;
+    if (chars > READ_CHAR_LIMIT) break;
+    numbered.push(entry);
+  }
+
+  const linesShown = startIdx + numbered.length;
+  const remaining = totalLines - linesShown;
+  const footer = remaining > 0
+    ? `\n\n[Showing lines ${offset}–${linesShown} of ${totalLines}. ${remaining} more lines — use offset=${linesShown + 1} to continue.]`
+    : totalLines > limit
+      ? `\n\n[End of requested range. File has ${totalLines} total lines.]`
       : "";
 
-  return { content: content + footer };
+  return { content: numbered.join("\n") + footer };
 }
 
 // ─── Write ─────────────────────────────────────────────────────────────────────

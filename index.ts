@@ -3,7 +3,7 @@
 // Usage:
 //   bun index.ts                     → interactive session picker
 //   bun index.ts --new [name]        → start a named new session
-//   bun index.ts --session <id>      → resume session
+//   bun index.ts --resume <id>       → resume session
 //   bun index.ts --list              → print sessions and exit
 //   bun index.ts --delete <id>       → delete session and exit
 //
@@ -16,7 +16,7 @@ import { select, input, confirm } from "@inquirer/prompts";
 import { runAgent } from "./src/agent.ts";
 import {
   createSession, listSessions, getSession, deleteSession, renameSession,
-  saveReadFiles, loadReadFiles, appendMessages, loadMessages, addTokens, formatAge,
+  saveReadFiles, loadReadFiles, appendMessages, saveCompactionMessages, loadMessages, addTokens, formatAge,
 } from "./src/sessions.ts";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
@@ -49,34 +49,56 @@ const red    = (s: string) => `\x1b[31m${s}\x1b[0m`;
 
 // ─── Session picker ───────────────────────────────────────────────────────────
 async function pickSession(): Promise<number> {
-  const sessions = listSessions(20);
+  while (true) {
+    const sessions = listSessions(20);
+    const NEW_SESSION = "__new__";
 
-  const NEW_SESSION = "__new__";
+    const choices = [
+      { name: dim("+ new session"), value: NEW_SESSION, short: "new" },
+      ...sessions.map((s) => ({
+        name: `${bold(String(s.id).padStart(3))}  ${s.name.padEnd(32)}${dim(`${formatAge(s.updated_at).padEnd(10)}  ${s.message_count} msgs`)}`,
+        value: String(s.id),
+        short: s.name,
+      })),
+    ];
 
-  const choices = [
-    { name: dim("+ new session"), value: NEW_SESSION, short: "new" },
-    ...sessions.map((s) => ({
-      name: `${bold(String(s.id).padStart(3))}  ${s.name.padEnd(32)}${dim(`${formatAge(s.updated_at).padEnd(10)}  ${s.message_count} msgs`)}`,
-      value: String(s.id),
-      short: s.name,
-    })),
-  ];
-
-  const choice = await select({
-    message: "session",
-    choices,
-    pageSize: 15,
-  });
-
-  if (choice === NEW_SESSION) {
-    const name = await input({
-      message: "session name",
-      default: `session-${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
+    const choice = await select({
+      message: "session",
+      choices,
+      pageSize: 15,
     });
-    return createSession(name, MODEL);
-  }
 
-  return parseInt(choice);
+    if (choice === NEW_SESSION) {
+      return createSession(`session-${new Date().toISOString().slice(0, 16).replace("T", " ")}`, MODEL);
+    }
+
+    const id = parseInt(choice);
+    const session = sessions.find((s) => s.id === id)!;
+
+    try {
+      const action = await select({
+        message: session.name,
+        choices: [
+          { name: "resume", value: "resume" },
+          { name: red("delete"), value: "delete" },
+        ],
+      });
+
+      if (action === "resume") return id;
+
+      try {
+        const ok = await confirm({ message: `delete "${session.name}" (#${id})?`, default: false });
+        if (ok) {
+          deleteSession(id);
+          console.log(red(`deleted #${id}\n`));
+        }
+      } catch {
+        // Esc on confirm → back to session list
+      }
+    } catch {
+      // Esc on action menu → back to session list
+    }
+  }
 }
 
 // ─── CLI args ──────────────────────────────────────────────────────────────────
@@ -104,9 +126,9 @@ async function resolveSessionId(): Promise<number> {
     process.exit(0);
   }
 
-  const sessionIdx = args.indexOf("--session");
-  if (sessionIdx !== -1) {
-    const id = parseInt(args[sessionIdx + 1] ?? "");
+  const resumeIdx = args.indexOf("--resume");
+  if (resumeIdx !== -1) {
+    const id = parseInt(args[resumeIdx + 1] ?? "");
     if (isNaN(id) || !getSession(id)) { console.error(`session ${id} not found`); process.exit(1); }
     return id;
   }
@@ -120,19 +142,30 @@ async function resolveSessionId(): Promise<number> {
     return createSession(name, MODEL);
   }
 
-  return await pickSession();
+  return createSession(`session-${new Date().toISOString().slice(0, 16).replace("T", " ")}`, MODEL);
 }
 
 // ─── Main REPL ────────────────────────────────────────────────────────────────
-const sessionId = await resolveSessionId();
-const session = getSession(sessionId)!;
-
+let sessionId = await resolveSessionId();
+let session = getSession(sessionId)!;
 let history = loadMessages(sessionId);
 let readFiles = loadReadFiles(sessionId);
 
-console.log(`\n${bold("agent-claw")} ${dim(`· #${sessionId} · ${session.name} · ${history.length} messages`)}`);
-if (claudeMdFile) console.log(dim(`CLAUDE.md: ${claudeMdFile.path}`));
-console.log(dim('type "exit" to quit · /sessions /new /rename /reset\n'));
+function printSessionHeader() {
+  console.log(`\n${bold("agent-claw")} ${dim(`· #${sessionId} · ${session.name} · ${history.length} messages`)}`);
+  if (claudeMdFile) console.log(dim(`CLAUDE.md: ${claudeMdFile.path}`));
+  console.log(dim('type "exit" to quit · /sessions /new /rename /reset\n'));
+}
+
+function switchSession(id: number) {
+  sessionId = id;
+  session = getSession(id)!;
+  history = loadMessages(id);
+  readFiles = loadReadFiles(id);
+  printSessionHeader();
+}
+
+printSessionHeader();
 
 // ─── REPL loop ────────────────────────────────────────────────────────────────
 while (true) {
@@ -150,27 +183,24 @@ while (true) {
 
   // ── in-session commands ──
   if (trimmed === "/sessions") {
-    const all = listSessions(20);
-    console.log();
-    for (const s of all) {
-      const marker = s.id === sessionId ? green("▶") : " ";
-      console.log(` ${marker} ${bold(String(s.id).padStart(3))}  ${s.name.padEnd(32)}${dim(`${formatAge(s.updated_at).padEnd(10)} ${s.message_count} msgs`)}`);
+    try {
+      const id = await pickSession();
+      if (id !== sessionId) switchSession(id);
+    } catch {
+      // Esc on session list → back to prompt
     }
-    console.log();
     continue;
   }
 
-  if (trimmed.startsWith("/new")) {
-    const name = trimmed.slice(4).trim() ||
-      `session-${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
-    const newId = createSession(name, MODEL);
-    console.log(green(`created #${newId} "${name}" — resume: bun index.ts --session ${newId}\n`));
+  if (trimmed === "/new") {
+    const id = createSession(`session-${new Date().toISOString().slice(0, 16).replace("T", " ")}`, MODEL);
+    switchSession(id);
     continue;
   }
 
   if (trimmed.startsWith("/rename")) {
     const name = trimmed.slice(7).trim();
-    if (name) { renameSession(sessionId, name); console.log(green(`renamed to "${name}"\n`)); }
+    if (name) { renameSession(sessionId, name); session = getSession(sessionId)!; console.log(green(`renamed to "${name}"\n`)); }
     continue;
   }
 
@@ -210,8 +240,12 @@ while (true) {
       },
     });
 
-    // Persist to DB
-    appendMessages(sessionId, result.history, historyLenBefore);
+    // Persist to DB — if compaction occurred, replace all messages with the checkpoint
+    if (result.compacted) {
+      saveCompactionMessages(sessionId, result.history);
+    } else {
+      appendMessages(sessionId, result.history, historyLenBefore);
+    }
     saveReadFiles(sessionId, result.readFiles);
     addTokens(sessionId, result.inputTokens, result.outputTokens);
 
@@ -226,5 +260,6 @@ while (true) {
 }
 
 saveReadFiles(sessionId, readFiles);
-console.log(dim(`\nsession #${sessionId} saved.\n`));
+console.log(dim(`\nsession #${sessionId} saved.`));
+console.log(`Continue: ${bold(`bun index.ts --resume ${sessionId}`)}\n`);
 process.exit(0);

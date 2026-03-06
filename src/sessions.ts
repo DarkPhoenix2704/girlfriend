@@ -21,6 +21,67 @@ export interface Session {
   message_count: number;
 }
 
+// ─── Migrations ───────────────────────────────────────────────────────────────
+// Add new migrations to the END of this array only. Never edit existing entries.
+
+const MIGRATIONS: { id: number; sql: string }[] = [
+  {
+    id: 1,
+    sql: `
+      CREATE TABLE IF NOT EXISTS sessions (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        name                TEXT NOT NULL,
+        model               TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+        created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        total_input_tokens  INTEGER NOT NULL DEFAULT 0,
+        total_output_tokens INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS messages (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        role       TEXT NOT NULL,
+        content    TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS read_files (
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        file_path  TEXT NOT NULL,
+        PRIMARY KEY (session_id, file_path)
+      );
+    `,
+  },
+  {
+    id: 2,
+    sql: `ALTER TABLE messages ADD COLUMN is_compaction_point INTEGER NOT NULL DEFAULT 0;`,
+  },
+];
+
+function runMigrations(database: Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS migrations (
+      id         INTEGER PRIMARY KEY,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  const applied = new Set(
+    (database.prepare("SELECT id FROM migrations").all() as { id: number }[]).map((r) => r.id)
+  );
+
+  const insert = database.prepare("INSERT INTO migrations (id) VALUES (?)");
+
+  for (const migration of MIGRATIONS) {
+    if (applied.has(migration.id)) continue;
+    database.transaction(() => {
+      database.exec(migration.sql);
+      insert.run(migration.id);
+    })();
+  }
+}
+
 // ─── DB init ──────────────────────────────────────────────────────────────────
 
 let _db: Database | null = null;
@@ -30,31 +91,7 @@ function db(): Database {
   mkdirSync(DB_DIR, { recursive: true });
   _db = new Database(DB_PATH);
   _db.exec("PRAGMA journal_mode=WAL");
-  _db.exec(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-      name                TEXT NOT NULL,
-      model               TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
-      created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
-      total_input_tokens  INTEGER NOT NULL DEFAULT 0,
-      total_output_tokens INTEGER NOT NULL DEFAULT 0
-    );
-
-    CREATE TABLE IF NOT EXISTS messages (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-      role       TEXT NOT NULL,
-      content    TEXT NOT NULL,  -- JSON-encoded Anthropic content
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS read_files (
-      session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-      file_path  TEXT NOT NULL,
-      PRIMARY KEY (session_id, file_path)
-    );
-  `);
+  runMigrations(_db);
   return _db;
 }
 
@@ -109,9 +146,19 @@ export function saveMessage(sessionId: number, msg: Anthropic.MessageParam): voi
 }
 
 export function loadMessages(sessionId: number): Anthropic.MessageParam[] {
-  const rows = db()
-    .prepare("SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC")
-    .all(sessionId) as { role: string; content: string }[];
+  // Resume from last compaction point if one exists — avoids replaying stale pre-compaction history
+  const checkpoint = db()
+    .prepare("SELECT id FROM messages WHERE session_id = ? AND is_compaction_point = 1 ORDER BY id DESC LIMIT 1")
+    .get(sessionId) as { id: number } | null;
+
+  const rows = (
+    checkpoint
+      ? db().prepare("SELECT role, content FROM messages WHERE session_id = ? AND id >= ? ORDER BY id ASC")
+          .all(sessionId, checkpoint.id)
+      : db().prepare("SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC")
+          .all(sessionId)
+  ) as { role: string; content: string }[];
+
   return rows.map((r) => ({
     role: r.role as "user" | "assistant",
     content: JSON.parse(r.content),
@@ -131,6 +178,30 @@ export function appendMessages(
     for (let i = previousLength; i < messages.length; i++) {
       const msg = messages[i]!;
       insert.run(sessionId, msg.role, JSON.stringify(msg.content));
+    }
+  });
+  tx();
+}
+
+/**
+ * Called when compaction occurred. Deletes all existing messages for the session
+ * and inserts the compacted history, marking the first message as the compaction point.
+ * On resume, loadMessages will start from this checkpoint.
+ */
+export function saveCompactionMessages(
+  sessionId: number,
+  messages: Anthropic.MessageParam[]
+): void {
+  const d = db();
+  const del = d.prepare("DELETE FROM messages WHERE session_id = ?");
+  const insert = d.prepare(
+    "INSERT INTO messages (session_id, role, content, is_compaction_point) VALUES (?, ?, ?, ?)"
+  );
+  const tx = d.transaction(() => {
+    del.run(sessionId);
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]!;
+      insert.run(sessionId, msg.role, JSON.stringify(msg.content), i === 0 ? 1 : 0);
     }
   });
   tx();
