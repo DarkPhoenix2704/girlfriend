@@ -3,6 +3,7 @@
 import { existsSync, statSync, mkdirSync } from "fs";
 import { resolve, dirname } from "path";
 import type { Tool } from "@anthropic-ai/sdk/resources/messages";
+import { memorySet, memoryGet, memoryList, memoryDelete } from "./sessions";
 
 // ─── Tool name constants ───────────────────────────────────────────────────────
 export const TOOL_READ = "Read";
@@ -13,6 +14,7 @@ export const TOOL_GLOB = "Glob";
 export const TOOL_GREP = "Grep";
 export const TOOL_WEB_FETCH = "WebFetch";
 export const TOOL_TASK = "Task";
+export const TOOL_MEMORY = "Memory";
 // ─── Anthropic tool schemas ────────────────────────────────────────────────────
 
 export const TOOL_SCHEMAS: Tool[] = [
@@ -173,6 +175,29 @@ Usage:
       required: ["description", "prompt"],
     },
   },
+  {
+    name: TOOL_MEMORY,
+    description: `Persistent key-value memory that survives across sessions. Use this to remember user preferences, project context, decisions, or any facts worth recalling later.
+
+Operations:
+- set: Store a value under a key (upserts — overwrites if key exists)
+- get: Retrieve a single value by key
+- list: List all stored memories (no params needed)
+- delete: Remove a memory by key`,
+    input_schema: {
+      type: "object",
+      properties: {
+        operation: {
+          type: "string",
+          enum: ["set", "get", "list", "delete"],
+          description: "The memory operation to perform",
+        },
+        key: { type: "string", description: "The memory key (required for set, get, delete)" },
+        value: { type: "string", description: "The value to store (required for set)" },
+      },
+      required: ["operation"],
+    },
+  },
 ];
 // ─── Tool executor ─────────────────────────────────────────────────────────────
 
@@ -214,6 +239,7 @@ export async function executeTool(
       case TOOL_TASK:
         if (!_taskExecutor) return { content: "<tool_use_error>Task executor not configured</tool_use_error>", is_error: true };
         return await _taskExecutor(typedInput, cwd);
+      case TOOL_MEMORY:  return toolMemory(typedInput);
       default:
         return { content: `<tool_use_error>Unknown tool: ${name}</tool_use_error>`, is_error: true };
     }
@@ -407,6 +433,8 @@ async function toolGlob(input: ToolInput, cwd: string = process.cwd()): Promise<
     return { content: "No files found matching the pattern." };
   }
 
+  const MAX_GLOB_RESULTS = 500;
+
   // Sort by modification time (newest first)
   const withMtime = await Promise.all(
     matches.map(async (f) => {
@@ -420,7 +448,13 @@ async function toolGlob(input: ToolInput, cwd: string = process.cwd()): Promise<
   );
   withMtime.sort((a, b) => b.mtime - a.mtime);
 
-  return { content: withMtime.map((f) => f.path).join("\n") };
+  const truncated = withMtime.length > MAX_GLOB_RESULTS;
+  const results = withMtime.slice(0, MAX_GLOB_RESULTS);
+  const footer = truncated
+    ? `\n(showing ${MAX_GLOB_RESULTS} of ${withMtime.length} matches — use a more specific pattern)`
+    : "";
+
+  return { content: results.map((f) => f.path).join("\n") + footer };
 }
 
 // ─── Grep ──────────────────────────────────────────────────────────────────────
@@ -507,7 +541,11 @@ async function toolWebFetch(input: ToolInput): Promise<ToolResult> {
   const url = input.url as string;
 
   const resp = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; girlfriend/1.0)" },    signal: AbortSignal.timeout(30_000),
+    headers: {
+      "User-Agent": "Mozilla/5.0 (compatible; girlfriend/1.0)",
+      "Accept": "text/markdown, text/plain;q=0.9, text/html;q=0.8, */*;q=0.7",
+    },
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!resp.ok) {
@@ -535,4 +573,39 @@ async function toolWebFetch(input: ToolInput): Promise<ToolResult> {
   if (text.length > MAX) text = text.slice(0, MAX) + `\n\n[Content truncated at ${MAX} chars]`;
 
   return { content: text };
+}
+
+// ─── Memory ─────────────────────────────────────────────────────────────────
+
+function toolMemory(input: ToolInput): ToolResult {
+  const op = input.operation as string;
+  const key = input.key as string | undefined;
+  const value = input.value as string | undefined;
+
+  switch (op) {
+    case "set": {
+      if (!key) return { content: "<tool_use_error>key is required for set</tool_use_error>", is_error: true };
+      if (!value) return { content: "<tool_use_error>value is required for set</tool_use_error>", is_error: true };
+      memorySet(key, value);
+      return { content: `Stored memory: ${key}` };
+    }
+    case "get": {
+      if (!key) return { content: "<tool_use_error>key is required for get</tool_use_error>", is_error: true };
+      const val = memoryGet(key);
+      if (val === null) return { content: `No memory found for key: ${key}` };
+      return { content: val };
+    }
+    case "list": {
+      const entries = memoryList();
+      if (entries.length === 0) return { content: "No memories stored." };
+      return { content: entries.map((e) => `[${e.key}] ${e.value} (${e.updated_at})`).join("\n") };
+    }
+    case "delete": {
+      if (!key) return { content: "<tool_use_error>key is required for delete</tool_use_error>", is_error: true };
+      const deleted = memoryDelete(key);
+      return { content: deleted ? `Deleted memory: ${key}` : `No memory found for key: ${key}` };
+    }
+    default:
+      return { content: `<tool_use_error>Unknown operation: ${op}. Use set, get, list, or delete.</tool_use_error>`, is_error: true };
+  }
 }

@@ -56,6 +56,16 @@ const MIGRATIONS: { id: number; sql: string }[] = [
     id: 2,
     sql: `ALTER TABLE messages ADD COLUMN is_compaction_point INTEGER NOT NULL DEFAULT 0;`,
   },
+  {
+    id: 3,
+    sql: `
+      CREATE TABLE IF NOT EXISTS memory (
+        key        TEXT PRIMARY KEY,
+        value      TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `,
+  },
 ];
 
 function runMigrations(database: Database): void {
@@ -237,6 +247,38 @@ export function loadReadFiles(sessionId: number): Set<string> {
     .prepare("SELECT file_path FROM read_files WHERE session_id = ?")
     .all(sessionId) as { file_path: string }[];
   return new Set(rows.map((r) => r.file_path));
+}
+
+// ─── Memory ───────────────────────────────────────────────────────────────────
+
+export interface MemoryEntry {
+  key: string;
+  value: string;
+  updated_at: string;
+}
+
+export function memorySet(key: string, value: string): void {
+  db()
+    .prepare("INSERT OR REPLACE INTO memory (key, value, updated_at) VALUES (?, ?, datetime('now'))")
+    .run(key, value);
+}
+
+export function memoryGet(key: string): string | null {
+  const row = db()
+    .prepare("SELECT value FROM memory WHERE key = ?")
+    .get(key) as { value: string } | null;
+  return row?.value ?? null;
+}
+
+export function memoryList(): MemoryEntry[] {
+  return db()
+    .prepare("SELECT key, value, updated_at FROM memory ORDER BY updated_at DESC")
+    .all() as MemoryEntry[];
+}
+
+export function memoryDelete(key: string): boolean {
+  const result = db().prepare("DELETE FROM memory WHERE key = ?").run(key);
+  return result.changes > 0;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

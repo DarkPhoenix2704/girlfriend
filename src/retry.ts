@@ -6,6 +6,8 @@ export interface RetryOptions {
   maxMs?: number;
   jitter?: number;
   isRetryable?: (err: unknown) => boolean;
+  /** Called before each retry — can do async work (e.g. compaction) before the next attempt */
+  onBeforeRetry?: (err: unknown) => Promise<void>;
 }
 
 function defaultIsRetryable(err: unknown): boolean {
@@ -32,6 +34,7 @@ export async function withRetry<T>(
       return await fn();
     } catch (err: unknown) {
       if (!isRetryable(err) || attempt === maxRetries) throw err;
+      await opts?.onBeforeRetry?.(err);
       const delay = Math.min(baseMs * Math.pow(2, attempt), maxMs) * (1 + jitter * Math.random());
       await new Promise((r) => setTimeout(r, delay));
     }

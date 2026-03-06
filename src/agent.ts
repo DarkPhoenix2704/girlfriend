@@ -3,7 +3,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { buildSystemPrompt, wrapClaudeMd } from "./prompts.ts";
 import { TOOL_SCHEMAS, executeTool, CONCURRENT_SAFE_TOOLS } from "./tools.ts";
-import { maybeCompact } from "./compaction.ts";
+import { maybeCompact, compact } from "./compaction.ts";
 import { withRetry } from "./retry.ts";
 
 export interface AgentOptions {
@@ -39,6 +39,8 @@ export interface AgentOptions {
   onCompact?: (summary: string) => void;
   /** Called after each API response with current rate-limit headers */
   onRateLimit?: (info: RateLimitInfo) => void;
+  /** Abort signal — abort() cancels the current stream and throws */
+  signal?: AbortSignal;
 }
 
 export interface RateLimitInfo {
@@ -158,7 +160,8 @@ export async function runAgent(
       options.onCompact?.(compactionResult.summary ?? "");
     }
 
-    // Streaming API call with retry
+    // Streaming API call with retry (400 "prompt too long" triggers forced compaction + retry)
+    let forcedCompaction = false;
     const response = await withRetry(async () => {
       finalText = "";
       const stream = client.messages.stream({
@@ -167,7 +170,7 @@ export async function runAgent(
         system: systemPrompt,
         tools: activeTools as Anthropic.Tool[],
         messages,
-      });
+      }, { signal: options.signal });
 
       stream.on("text", (delta) => {
         finalText += delta;
@@ -192,7 +195,35 @@ export async function runAgent(
         });
       }
       return msg;
-    }, { maxRetries: 10, maxMs: 32_000 });
+    }, {
+      maxRetries: 10, maxMs: 32_000,
+      isRetryable: (err) => {
+        const status = (err as { status?: number }).status;
+        if (status === 400) {
+          const msg = String((err as { message?: string }).message ?? "");
+          if (msg.includes("prompt is too long") && !forcedCompaction) {
+            // Force compaction now and signal retry
+            forcedCompaction = true;
+            return true;
+          }
+        }
+        return status === 429 || status === 529 || status === 500 || status === 503;
+      },
+      onBeforeRetry: async (err) => {
+        const status = (err as { status?: number }).status;
+        const msg = String((err as { message?: string }).message ?? "");
+        if (status === 400 && msg.includes("prompt is too long")) {
+          // Compact immediately regardless of token threshold
+          const summary = await compact(client, messages, systemPrompt, model);
+          messages.length = 0;
+          messages.push({ role: "user", content: summary });
+          compacted = true;
+          totalInputTokens = 0;
+          totalOutputTokens = 0;
+          options.onCompact?.(summary);
+        }
+      },
+    });
 
     totalInputTokens += response.usage.input_tokens;
     totalOutputTokens += response.usage.output_tokens;

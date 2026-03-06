@@ -73,6 +73,7 @@ When you encounter an obstacle, do not use destructive actions as a shortcut to 
 function buildUsingTools(tools: string[]): string {
   const hasBash = tools.includes("Bash");
   const hasAgent = tools.includes("Task");
+  const hasMemory = tools.includes("Memory");
 
   return `# Using your tools
  - Do NOT use the Bash to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:
@@ -83,7 +84,7 @@ function buildUsingTools(tools: string[]): string {
   - To search the content of files, use Grep instead of grep or rg
   - Reserve using the Bash exclusively for system commands and terminal operations that require shell execution.
  - For simple, directed codebase searches (e.g. for a specific file/class/function) use the Glob or Grep directly.
-${hasAgent ? " - For broader codebase exploration and deep research, use the Agent tool with subagent_type=Explore. This is slower than calling Glob or Grep directly so use this only when a simple, directed search proves to be insufficient.\n" : ""} - You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel. Maximize use of parallel tool calls where possible to increase efficiency.`;
+${hasAgent ? " - For broader codebase exploration and deep research, use the Agent tool with subagent_type=Explore. This is slower than calling Glob or Grep directly so use this only when a simple, directed search proves to be insufficient.\n" : ""}${hasMemory ? " - Use the Memory tool to persist important facts, user preferences, project conventions, and decisions across sessions. Store things the user tells you to remember, or things you discover that would be costly to re-derive. Don't store transient or obvious information.\n" : ""} - You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel. Maximize use of parallel tool calls where possible to increase efficiency.`;
 }
 
 function buildOutputEfficiency(): string {

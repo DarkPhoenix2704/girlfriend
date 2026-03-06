@@ -275,6 +275,8 @@ export async function runApp(opts: AppOptions): Promise<void> {
     let savedLength = history.length;
     let pendingCompaction = false;
     let agentRunning = false;
+    let agentAbort: AbortController | null = null;
+    let escPrimed = false; // true after first Esc while agent runs
     const pendingTools = new Map<string, TextRenderable>();
     let lastAgentText = "";
     let headerSessionText: TextRenderable;
@@ -490,9 +492,40 @@ export async function runApp(opts: AppOptions): Promise<void> {
       } catch { /* clipboard unavailable — ignore */ }
     };
 
+    // Esc — first press shows warning, second cancels the running agent
+    const escCancelLine = new TextRenderable(renderer, {
+      content: "", fg: YELLOW, width: "100%", height: 0, paddingLeft: 2,
+    });
+    renderer.root.add(escCancelLine);
+
+    let escPrimedTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function clearEscPrimed() {
+      escPrimed = false;
+      escCancelLine.content = "";
+      escCancelLine.height = 0;
+      if (escPrimedTimer) { clearTimeout(escPrimedTimer); escPrimedTimer = null; }
+    }
+
+    const escHandler = (key: KeyEvent) => {
+      if (key.name !== "escape") return;
+      if (!agentRunning) return;
+      key.preventDefault();
+      if (!escPrimed) {
+        escPrimed = true;
+        escCancelLine.content = "  press Esc again to cancel";
+        escCancelLine.height = 1;
+        escPrimedTimer = setTimeout(clearEscPrimed, 2000);
+      } else {
+        clearEscPrimed();
+        agentAbort?.abort();
+      }
+    };
+
     renderer._internalKeyInput.onInternal("keypress", ctrlOHandler);
     renderer._internalKeyInput.onInternal("keypress", selectionModeHandler);
     renderer._internalKeyInput.onInternal("keypress", clipboardHandler);
+    renderer._internalKeyInput.onInternal("keypress", escHandler);
 
     // Hide suggestions when input is cleared
     inputField.on(InputRenderableEvents.ENTER, () => {
@@ -504,6 +537,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
       renderer._internalKeyInput.offInternal("keypress", ctrlOHandler);
       renderer._internalKeyInput.offInternal("keypress", selectionModeHandler);
       renderer._internalKeyInput.offInternal("keypress", clipboardHandler);
+      renderer._internalKeyInput.offInternal("keypress", escHandler);
       renderer.useMouse = true; // restore on screen switch
       flushAndCleanup();
     };
@@ -695,6 +729,8 @@ export async function runApp(opts: AppOptions): Promise<void> {
       // Agent turn
       ensureSession();
       agentRunning = true;
+      agentAbort = new AbortController();
+      escPrimed = false;
       inputField.blur();
       addUserBubble(value);
 
@@ -750,6 +786,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
             addLine("  ↻ context compacted");
           },
           onRateLimit: updateRateLimit,
+          signal: agentAbort.signal,
         });
 
         if (currentBubble) {
@@ -775,6 +812,8 @@ export async function runApp(opts: AppOptions): Promise<void> {
 
       stopSpinner();
       agentRunning = false;
+      agentAbort = null;
+      clearEscPrimed();
       inputField.focus();
     });
   }
