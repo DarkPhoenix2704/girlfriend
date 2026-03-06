@@ -91,6 +91,11 @@ jobs:
             --armor \
             dist/SHA256SUMS
 
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: install.sh
+          sparse-checkout-cone-mode: false
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -105,3 +110,4 @@ jobs:
             dist/girlfriend-darwin-x64.asc
             dist/SHA256SUMS
             dist/SHA256SUMS.asc
+            install.sh
