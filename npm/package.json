@@ -1,0 +1,26 @@
+{
+  "name": "gf-uwu",
+  "version": "0.0.0",
+  "description": "girlfriend — a sharp, capable AI assistant for your terminal",
+  "keywords": ["ai", "cli", "assistant", "claude", "terminal", "llm"],
+  "homepage": "https://github.com/DarkPhoenix2704/girlfriend",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DarkPhoenix2704/girlfriend.git"
+  },
+  "license": "MIT",
+  "author": "DarkPhoenix2704",
+  "bin": {
+    "girlfriend": "bin/girlfriend"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "install.js",
+    "bin/"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
