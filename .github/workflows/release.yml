@@ -67,6 +67,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Checkout first so nothing overwrites the downloaded artifacts later
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            install.sh
+            npm
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -89,18 +102,6 @@ jobs:
             --armor \
             dist/SHA256SUMS
 
-      - uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            install.sh
-            npm
-          sparse-checkout-cone-mode: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -122,5 +123,9 @@ jobs:
         run: |
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
+          # Create a bin/ stub so npm doesn't warn — postinstall replaces it with the real binary
+          mkdir -p bin
+          printf '#!/bin/sh\necho "Run: npm install gf-uwu to download the binary"\nexit 1\n' > bin/girlfriend
+          chmod +x bin/girlfriend
           npm version "$VERSION" --no-git-tag-version
           npm publish --access public
