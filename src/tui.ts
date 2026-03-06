@@ -405,6 +405,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
       width: "100%", height: 3,
       border: true, borderStyle: "round", borderColor: PINK,
     });
+    inputBox.titleAlignment = "right";
     const inputField = new InputRenderable(renderer, {
       width: "100%", paddingLeft: 1,
       placeholder: "message…",
@@ -412,33 +413,24 @@ export async function runApp(opts: AppOptions): Promise<void> {
     inputBox.add(inputField);
     renderer.root.add(inputBox);
 
-    // Rate limit status bar (hidden until first API response)
-    const rateLimitBar = new TextRenderable(renderer, {
-      content: "", fg: MUTED, width: "100%", height: 0, paddingLeft: 2,
-    });
-    renderer.root.add(rateLimitBar);
-
     function updateRateLimit(info: RateLimitInfo) {
       const parts: string[] = [];
       // OAuth unified limits
       if (info.unified5hUtilization !== null) {
         const pct = (info.unified5hUtilization * 100).toFixed(0);
         const status = info.unifiedStatus === "allowed" ? "" : ` ⚠ ${info.unifiedStatus}`;
-        parts.push(`5h: ${pct}% used${status}`);
+        parts.push(`5h: ${pct}%${status}`);
       }
       if (info.unified7dUtilization !== null)
-        parts.push(`7d: ${(info.unified7dUtilization * 100).toFixed(0)}% used`);
+        parts.push(`7d: ${(info.unified7dUtilization * 100).toFixed(0)}%`);
       if (info.unifiedFallback && info.unifiedFallback !== "available")
         parts.push(`fallback: ${info.unifiedFallback}`);
       // Standard API key limits
-      if (info.requestsRemaining !== null) parts.push(`${info.requestsRemaining} req left`);
-      if (info.inputTokensRemaining !== null) parts.push(`${(info.inputTokensRemaining / 1000).toFixed(0)}k in-tok left`);
-      if (info.outputTokensRemaining !== null) parts.push(`${info.outputTokensRemaining} out-tok left`);
+      if (info.requestsRemaining !== null) parts.push(`${info.requestsRemaining} req`);
+      if (info.inputTokensRemaining !== null) parts.push(`${(info.inputTokensRemaining / 1000).toFixed(0)}k in`);
+      if (info.outputTokensRemaining !== null) parts.push(`${info.outputTokensRemaining} out`);
 
-      if (parts.length > 0) {
-        rateLimitBar.content = `  ${parts.join("  ·  ")}`;
-        rateLimitBar.height = 1;
-      }
+      if (parts.length > 0) inputBox.title = ` ${parts.join(" · ")} `;
     }
 
     inputField.focus();
