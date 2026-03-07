@@ -10,7 +10,7 @@ import {
   SyntaxStyle,
 } from "@opentui/core";
 import type { CliRenderer, KeyEvent } from "@opentui/core";
-import { PINK, YELLOW, RED, MUTED, FG } from "./theme.ts";
+import { PINK, YELLOW, RED, MUTED, FG, BG } from "./theme.ts";
 import { runAgent } from "../agent.ts";
 import type { RateLimitInfo } from "../agent.ts";
 import { compact } from "../compaction.ts";
@@ -105,7 +105,7 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
     flexDirection: "row", paddingLeft: 1, paddingRight: 1,
   });
   const headerEmoji = new TextRenderable(renderer, {
-    content: "(❀◕‿◕❀)  ", fg: PINK, alignSelf: "center",
+    content: "(❀◕‿◕❀)", fg: BG, bg: PINK, alignSelf: "center", marginRight: 2,
   });
   const headerInfo = new BoxRenderable(renderer, { flexDirection: "column", flexGrow: 1, justifyContent: "center" });
   headerInfo.add(new TextRenderable(renderer, { content: "girlfriend", fg: PINK }));
