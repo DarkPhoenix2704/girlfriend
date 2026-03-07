@@ -74,6 +74,8 @@ export class WhatsAppGateway implements Gateway {
   private onMessage: ((msg: IncomingMessage) => Promise<void>) | null = null;
   private stopping = false;
   private reconnecting = false;
+  // Track IDs of messages we sent so we don't process our own replies
+  private sentIds = new Set<string>();
 
   async start(onMessage: (msg: IncomingMessage) => Promise<void>): Promise<void> {
     this.onMessage = onMessage;
@@ -145,12 +147,23 @@ export class WhatsAppGateway implements Gateway {
       for (const msg of messages) {
         const jid = msg.key.remoteJid ?? "";
 
-        if (msg.key.fromMe) {
-          log("info", "WhatsApp message ignored (fromMe)", { jid });
+        // Skip our own sent replies to prevent infinite loops
+        if (msg.key.id && this.sentIds.has(msg.key.id)) {
+          this.sentIds.delete(msg.key.id);
           continue;
         }
+
         if (!jid || jid.endsWith("@g.us")) {
           log("info", "WhatsApp message ignored (group or no jid)", { jid });
+          continue;
+        }
+
+        const isFromSelf = msg.key.fromMe === true;
+        const isAllowedExternal = !isFromSelf && isAllowed(jid);
+
+        // Accept: messages from self (saved messages / own chat) OR allowed external numbers
+        if (!isFromSelf && !isAllowedExternal) {
+          log("info", "WhatsApp message ignored (not from self, not in allowed list)", { jid });
           continue;
         }
 
@@ -160,13 +173,7 @@ export class WhatsAppGateway implements Gateway {
           continue;
         }
 
-        if (!isAllowed(jid)) {
-          log("warn", "WhatsApp message blocked (not allowed)", { jid });
-          await this.sock?.sendMessage(jid, { text: "Sorry, you're not authorised." });
-          continue;
-        }
-
-        log("info", "WhatsApp message received", { jid, text: text.slice(0, 80) });
+        log("info", "WhatsApp message received", { jid, fromMe: isFromSelf, text: text.slice(0, 80) });
 
         // Mark as read so the user sees a blue tick
         try {
@@ -200,7 +207,12 @@ export class WhatsAppGateway implements Gateway {
     const jid = msg.externalId.includes("@")
       ? msg.externalId
       : `${msg.externalId}@s.whatsapp.net`;
-    await this.sock.sendMessage(jid, { text: msg.text });
+    const result = await this.sock.sendMessage(jid, { text: msg.text });
+    // Track sent ID so messages.upsert doesn't re-process our own reply
+    if (result?.key?.id) {
+      this.sentIds.add(result.key.id);
+      setTimeout(() => this.sentIds.delete(result.key.id!), 30_000);
+    }
   }
 
   async stop(): Promise<void> {
