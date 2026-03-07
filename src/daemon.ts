@@ -12,6 +12,7 @@ import { enableDaemonLog, log } from "./daemon-log.ts";
 import { GatewayRouter } from "./gateway/router.ts";
 import { TelegramGateway } from "./gateway/telegram.ts";
 import { WhatsAppGateway } from "./gateway/whatsapp.ts";
+import { SlackGateway } from "./gateway/slack.ts";
 import { HttpServer } from "./gateway/http.ts";
 import { initConfig, config, watchConfig } from "./config.ts";
 import { writePid, clearPid, readPid, isDaemonRunning } from "./pid.ts";
@@ -56,6 +57,7 @@ export async function startDaemon(): Promise<void> {
   const router = new GatewayRouter(client);
   if (process.env.TELEGRAM_BOT_TOKEN && cfg.telegram.enabled) router.register(new TelegramGateway());
   if (cfg.whatsapp.enabled || process.env.WHATSAPP_ENABLED === "1") router.register(new WhatsAppGateway());
+  if ((cfg.slack.enabled || process.env.SLACK_BOT_TOKEN) && process.env.SLACK_APP_TOKEN) router.register(new SlackGateway());
   await router.start();
   setActiveRouter(router);
 

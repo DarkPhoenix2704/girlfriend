@@ -13,6 +13,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@opentui/core": "^0.1.86",
+    "@slack/bolt": "^4.6.0",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "croner": "^10.0.1",
     "grammy": "^1.41.1",

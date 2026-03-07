@@ -24,7 +24,7 @@ export interface Session {
   message_count: number;
 }
 
-export type SessionSource = "local" | "telegram" | "whatsapp" | "cron" | "http";
+export type SessionSource = "local" | "telegram" | "whatsapp" | "slack" | "cron" | "http";
 
 export interface MemoryFact {
   id: number;

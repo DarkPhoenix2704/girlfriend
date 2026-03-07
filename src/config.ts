@@ -39,6 +39,9 @@ export interface Config {
     consolidation_enabled: boolean;
     consolidation_schedule: string;
   };
+  slack: {
+    enabled: boolean;
+  };
   http: {
     /** Enable the local HTTP gateway for TUI → daemon communication */
     enabled: boolean;
@@ -55,6 +58,7 @@ const DEFAULTS: Config = {
   search:   { country: "IN", count: 5 },
   notify:   { channel: "telegram", chat_id: "" },
   memory:   { consolidation_enabled: true, consolidation_schedule: "0 3 * * *" },
+  slack:    { enabled: false },
   http:     { enabled: true, port: 7070 },
 };
 
@@ -129,6 +133,10 @@ chat_id = ""           # your Telegram chat_id or WhatsApp number
 [memory]
 consolidation_enabled = true
 consolidation_schedule = "0 3 * * *"   # nightly at 3am
+
+[slack]
+enabled = false
+# Set SLACK_BOT_TOKEN and SLACK_APP_TOKEN env vars to activate
 
 [http]
 enabled = true

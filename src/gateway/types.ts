@@ -2,7 +2,7 @@
 
 import type { RateLimitInfo } from "../agent.ts";
 
-export type GatewaySource = "local" | "telegram" | "whatsapp" | "http";
+export type GatewaySource = "local" | "telegram" | "whatsapp" | "slack" | "http";
 
 export interface IncomingMessage {
   source: GatewaySource;

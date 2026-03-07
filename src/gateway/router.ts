@@ -173,7 +173,7 @@ export class GatewayRouter {
     const model = options.model ?? DEFAULT_MODEL;
 
     // Namespace scopes memories to the specific user; only set for user-facing gateways.
-    const namespace = (msg.source === "telegram" || msg.source === "whatsapp")
+    const namespace = (msg.source === "telegram" || msg.source === "whatsapp" || msg.source === "slack")
       ? `${msg.source}:${msg.externalId}`
       : undefined;
 
