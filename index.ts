@@ -1,6 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { runApp } from "./src/tui.ts";
 import { createSession, listSessions, getSession, deleteSession, formatAge } from "./src/sessions.ts";
+import {
+  startDaemon, stopDaemon, daemonStatus,
+  printLaunchdPlist, printSystemdUnit,
+} from "./src/daemon.ts";
 
 // ─── Auth ──────────────────────────────────────────────────────────────────────
 const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -18,6 +22,24 @@ const red  = (s: string) => `\x1b[31m${s}\x1b[0m`;
 
 // ─── CLI args ──────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
+
+// ─── Daemon subcommands ────────────────────────────────────────────────────────
+const daemonIdx = args.indexOf("--daemon");
+if (daemonIdx !== -1) {
+  const sub = args[daemonIdx + 1];
+  switch (sub) {
+    case "start":   await startDaemon(); break;
+    case "stop":    stopDaemon(); break;
+    case "status":  daemonStatus(); break;
+    case "restart": stopDaemon(); await startDaemon(); break;
+    case "plist":   printLaunchdPlist(); break;
+    case "systemd": printSystemdUnit(); break;
+    default:
+      console.error("usage: --daemon start|stop|status|restart|plist|systemd");
+      process.exit(1);
+  }
+  process.exit(0);
+}
 
 if (args.includes("--list")) {
   const sessions = listSessions(50);
