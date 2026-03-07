@@ -17,3 +17,12 @@ export { definition as SearchMemory }  from "./search-memory.ts";
 export { definition as ForgetFact }    from "./forget-fact.ts";
 export { definition as SearchHistory } from "./search-history.ts";
 export { definition as GetEvents }     from "./get-events.ts";
+// Phase 4 — browser automation + web search
+export { definition as BrowserOpen }       from "./browser-open.ts";
+export { definition as BrowserClick }      from "./browser-click.ts";
+export { definition as BrowserFill }       from "./browser-fill.ts";
+export { definition as BrowserScreenshot } from "./browser-screenshot.ts";
+export { definition as BrowserExtract }    from "./browser-extract.ts";
+export { definition as BrowserScroll }     from "./browser-scroll.ts";
+export { definition as BrowserClose }      from "./browser-close.ts";
+export { definition as Search }            from "./search.ts";
