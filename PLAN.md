@@ -159,53 +159,30 @@ Runs 24/7, accepts messages from Telegram/WhatsApp, manages cron jobs, delegates
 
 ---
 
-## Phase 5 — Specialized Subagents
+## Phase 5 — Subagent Framework
 
-> Named agents with curated tools, system prompts, and isolated memory namespaces.
+> We build the **framework** only. Domain agents (finance, stocks, calendar, research) are user-built using the same pattern.
 
-### 5.1 Subagent framework
+### 5.1 Subagent framework (platform — we build)
 
 - [ ] `src/agents/types.ts` — `AgentDefinition` interface (name, description, tools, systemPrompt, namespace, model)
-- [ ] `src/agents/registry.ts` — auto-discovers agent definitions, similar to tool registry
+- [ ] `src/agents/registry.ts` — auto-discovers agent definitions from `~/.openclaw/agents/`, similar to tool registry
 - [ ] `src/tools/impl/delegate.ts` — orchestrator tool to hand off to a named subagent, returns result
 - [ ] Subagents can read from their own memory namespace but write to shared memories too
 - [ ] Subagent depth guard — subagents cannot spawn other subagents (already partially in place)
+- [ ] `src/agents/example-agent.ts` — well-commented template users copy to build their own
 
-### 5.2 Finance subagent
-
-- [ ] `src/agents/finance.ts` — tracks accounts, expenses, budgets, transactions
-- [ ] Tools: `SearchMemory` (finance namespace), `RememberFact`, `WebFetch` (bank portals read-only)
-- [ ] Can answer: "how much did I spend on food this month?", "what's my net worth?"
-- [ ] Manual entry via chat: "add expense: ₹450 dinner, category food"
-- [ ] [ ] Decide on data source — manual entry vs bank API vs statement parsing — **[!] needs decision**
-
-### 5.3 Stocks / investments subagent
-
-- [ ] `src/agents/stocks.ts` — tracks portfolio, watchlist, P&L
-- [ ] Tools: `WebFetch` or a market data API (Yahoo Finance, Alpha Vantage, NSE/BSE for India)
-- [ ] Daily cron: fetch prices, update portfolio value, alert on significant moves
-- [ ] Can answer: "what's my portfolio up/down today?", "any news on Infosys?"
-- [ ] `src/tools/impl/fetch-stock-price.ts` — get current/historical price for a ticker
-
-### 5.4 Research subagent
-
-- [ ] `src/agents/research.ts` — deep research using search + browser + WebFetch
-- [ ] Given a topic, produces a structured report
-- [ ] Saves research summaries to memory for later reference
-
-### 5.5 Calendar / reminders subagent
-
-- [ ] `src/agents/calendar.ts` — manages reminders, events, deadlines
-- [ ] Backed by cron_jobs table (reminders = one-shot crons)
-- [ ] Integrates with Google Calendar API (optional, needs OAuth) — **[!] needs decision**
-- [ ] Proactive: morning briefing cron summarizes today's events
-
-### 5.6 Orchestrator agent
+### 5.2 Orchestrator agent (platform — we build)
 
 - [ ] `src/agents/orchestrator.ts` — the master agent that receives all incoming messages
 - [ ] Decides: answer directly, delegate to subagent, or ask clarifying question
 - [ ] Has access to all memory tools + delegate tool
 - [ ] System prompt emphasizes routing, not doing
+
+### 5.x Domain agents (user-built, not in this repo)
+
+> Finance, stocks, research, calendar — users build these by copying the example agent template.
+> We document the pattern; we don't ship the implementations.
 
 ---
 
@@ -255,16 +232,16 @@ Runs 24/7, accepts messages from Telegram/WhatsApp, manages cron jobs, delegates
 
 ---
 
-## Decisions needed (before building)
+## Decisions
 
-| # | Decision | Options |
-|---|----------|---------|
-| 1 | WhatsApp integration method | Baileys (free/unofficial) vs Twilio (paid/reliable) |
-| 2 | Finance data source | Manual entry vs bank scraping vs Plaid/Setu API |
-| 3 | Google Calendar | Integrate or keep reminders self-contained in SQLite |
-| 4 | Search API | Brave Search API vs SerpAPI vs DuckDuckGo scrape |
-| 5 | Deployment target | Local Mac only vs VPS (needed for 24/7 if Mac sleeps) |
-| 6 | Multi-user | Single user (you) only, or support family/team? |
+| # | Decision | Resolution |
+|---|----------|------------|
+| 1 | WhatsApp integration method | **Baileys** (free, unofficial, QR scan) |
+| 2 | Finance / stocks / calendar data | **User-built** — not in platform scope |
+| 3 | Search API | **Brave Search API** (key in .env) |
+| 4 | Deployment target | Local Mac for now; VPS path documented |
+| 5 | Multi-user | Single user initially; owner_id column in schema for future |
+| 6 | Domain agents | **User-extensible** via agent registry pattern |
 
 ---
 
