@@ -1,111 +1,81 @@
----
-description: Use Bun instead of Node.js, npm, pnpm, or vite.
-globs: "*.ts, *.tsx, *.html, *.css, *.js, *.jsx, package.json"
-alwaysApply: false
----
+# agent-claw
 
-Default to using Bun instead of Node.js.
+A minimal Claude agent REPL built with Bun. No frontend, no server, no database drivers beyond `bun:sqlite`.
 
-- Use `bun <file>` instead of `node <file>` or `ts-node <file>`
-- Use `bun test` instead of `jest` or `vitest`
-- Use `bun build <file.html|file.ts|file.css>` instead of `webpack` or `esbuild`
-- Use `bun install` instead of `npm install` or `yarn install` or `pnpm install`
-- Use `bun run <script>` instead of `npm run <script>` or `yarn run <script>` or `pnpm run <script>`
-- Use `bunx <package> <command>` instead of `npx <package> <command>`
-- Bun automatically loads .env, so don't use dotenv.
+## Runtime
 
-## APIs
+Always use Bun, never Node.
 
-- `Bun.serve()` supports WebSockets, HTTPS, and routes. Don't use `express`.
-- `bun:sqlite` for SQLite. Don't use `better-sqlite3`.
-- `Bun.redis` for Redis. Don't use `ioredis`.
-- `Bun.sql` for Postgres. Don't use `pg` or `postgres.js`.
-- `WebSocket` is built-in. Don't use `ws`.
-- Prefer `Bun.file` over `node:fs`'s readFile/writeFile
-- Bun.$`ls` instead of execa.
+- `bun index.ts` — run the app
+- `bun test` — run tests
+- `bun install` — install deps
+- `bunx <pkg>` — execute packages
+- `Bun.file()` — read/write files (not `node:fs`)
+- `bun:sqlite` — SQLite (not `better-sqlite3`)
+- Bun auto-loads `.env`, no dotenv needed
 
-## Testing
+## Project structure
 
-Use `bun test` to run tests.
-
-```ts#index.test.ts
-import { test, expect } from "bun:test";
-
-test("hello world", () => {
-  expect(1).toBe(1);
-});
+```
+index.ts                  — entry: CLI flags, auth, launches TUI
+src/
+  agent.ts                — main agent loop (streaming, tool execution, compaction)
+  subagent.ts             — subagent runner for the Task tool
+  compaction.ts           — context compaction (fires at 50k tokens)
+  prompts.ts              — system prompt builder, compaction prompt, subagent prompts
+  sessions.ts             — SQLite session persistence (~/.agent-claw/sessions.db)
+  retry.ts                — exponential backoff retry wrapper
+  updater.ts              — background update checker
+  tools/
+    index.ts              — auto-builds TOOL_SCHEMAS + executeTool from registry
+    types.ts              — ToolDefinition, ToolContext, ToolResult interfaces
+    impl/
+      index.ts            — tool registry (one export per tool)
+      read.ts, write.ts, edit.ts, bash.ts, glob.ts, grep.ts, web-fetch.ts, memory.ts, task.ts
+  tui/
+    index.ts              — TUI entry, mounts screens
+    chat-screen.ts        — main chat view, input handling, agent integration
+    session-screen.ts     — session picker
+    model-screen.ts       — model selector
+    components.ts, theme.ts
 ```
 
-## Frontend
+## Key conventions
 
-Use HTML imports with `Bun.serve()`. Don't use `vite`. HTML imports fully support React, CSS, Tailwind.
+### Adding a new tool
+1. Create `src/tools/impl/<name>.ts` exporting `definition: ToolDefinition`
+2. Add one line to `src/tools/impl/index.ts`: `export { definition as ToolName } from "./<name>.ts";`
+3. Nothing else needs changing — the registry auto-discovers it
 
-Server:
+Mark `concurrent: true` on the definition if the tool is read-only and safe to run in parallel.
 
-```ts#index.ts
-import index from "./index.html"
+### Agent loop (`src/agent.ts`)
+- Streams API calls, executes tools, loops until no `tool_use` blocks in response
+- Compaction fires automatically at 50k context tokens via `maybeCompact()`
+- All API calls use `cache_control: { type: "ephemeral" }` on the system prompt and last tool for prompt caching
+- `claudeMd` is injected into the system prompt (not user messages)
 
-Bun.serve({
-  routes: {
-    "/": index,
-    "/api/users/:id": {
-      GET: (req) => {
-        return new Response(JSON.stringify({ id: req.params.id }));
-      },
-    },
-  },
-  // optional websocket support
-  websocket: {
-    open: (ws) => {
-      ws.send("Hello, world!");
-    },
-    message: (ws, message) => {
-      ws.send(message);
-    },
-    close: (ws) => {
-      // handle close
-    }
-  },
-  development: {
-    hmr: true,
-    console: true,
-  }
-})
-```
+### Sessions (`src/sessions.ts`)
+- SQLite at `~/.agent-claw/sessions.db`
+- Tables: `sessions`, `messages`, `read_files`, `migrations`
+- To add a schema change: append to the `MIGRATIONS` array — each entry runs exactly once
 
-HTML files can import .tsx, .jsx or .js files directly and Bun's bundler will transpile & bundle automatically. `<link>` tags can point to stylesheets and Bun's CSS bundler will bundle.
+### Subagents (`src/subagent.ts`)
+- Task tool spawns subagents with a restricted tool set
+- Default unnamed subagents use Haiku; named definitions can specify `model: "sonnet" | "opus" | "haiku" | "inherit"`
+- Subagents cannot spawn their own subagents (depth guard)
 
-```html#index.html
-<html>
-  <body>
-    <h1>Hello, world!</h1>
-    <script type="module" src="./frontend.tsx"></script>
-  </body>
-</html>
-```
+## Auth
 
-With the following `frontend.tsx`:
+- API key: set `ANTHROPIC_API_KEY` (standard SDK default)
+- OAuth: set `CLAUDE_CODE_OAUTH_TOKEN` — automatically adds `anthropic-beta: oauth-2025-04-20` header
 
-```tsx#frontend.tsx
-import React from "react";
-import { createRoot } from "react-dom/client";
+## Release
 
-// import .css files directly and it works
-import './index.css';
-
-const root = createRoot(document.body);
-
-export default function Frontend() {
-  return <h1>Hello, world!</h1>;
-}
-
-root.render(<Frontend />);
-```
-
-Then, run index.ts
+Releases are fully automated via GitHub Actions. To cut a release:
 
 ```sh
-bun --hot ./index.ts
+git tag v0.x.y && git push origin v0.x.y
 ```
 
-For more information, read the Bun API docs in `node_modules/bun-types/docs/**.mdx`.
+The CI workflow builds native binaries (linux-x64, darwin-arm64), signs them with GPG, creates a GitHub release, and publishes the `gf-uwu` npm package family.
