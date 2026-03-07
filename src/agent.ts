@@ -5,6 +5,7 @@ import { buildSystemPrompt } from "./prompts.ts";
 import { TOOL_SCHEMAS, executeTool, CONCURRENT_SAFE_TOOLS, setActiveSession } from "./tools.ts";
 import { maybeCompact, compact } from "./compaction.ts";
 import { withRetry } from "./retry.ts";
+import { logEvent } from "./sessions.ts";
 
 export interface AgentOptions {
   /** Anthropic API client */
@@ -112,6 +113,12 @@ export async function runAgent(
   });
 
   const userContent = prompt;
+  // Log incoming message to events
+  logEvent("message_received", {
+    sessionId: options.sessionId,
+    name: "user",
+    input: userContent.slice(0, 500),
+  });
   // Start from prior history if provided (multi-turn chat)
   const messages: Anthropic.MessageParam[] = [
     ...(options.history ?? []),

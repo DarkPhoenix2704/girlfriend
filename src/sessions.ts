@@ -547,6 +547,23 @@ export function listMemories(options: { category?: string; namespace?: string; l
   ).all(...params, options.limit ?? 50) as MemoryFact[];
 }
 
+// ─── Recent messages for consolidation ───────────────────────────────────────
+
+export interface RawMessage {
+  role: string;
+  content: string;
+  created_at: string;
+}
+
+export function getRecentMessages(since: string | null, limit = 200): RawMessage[] {
+  const rows = (
+    since
+      ? db().prepare("SELECT role, content, created_at FROM messages WHERE created_at > ? ORDER BY id DESC LIMIT ?").all(since, limit)
+      : db().prepare("SELECT role, content, created_at FROM messages ORDER BY id DESC LIMIT ?").all(limit)
+  ) as RawMessage[];
+  return rows.reverse(); // chronological
+}
+
 // ─── Full-text message search ─────────────────────────────────────────────────
 
 export interface MessageSearchResult {
