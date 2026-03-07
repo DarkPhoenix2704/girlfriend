@@ -14,14 +14,14 @@ import type { CliRenderer, KeyEvent } from "@opentui/core";
 import { PINK, YELLOW, RED, MUTED, FG, BG } from "./theme.ts";
 import { renameSession, getSession } from "../sessions.ts";
 import type { Session } from "../sessions.ts";
-import type { GatewayRouter } from "../gateway/router.ts";
+import type { IRouter } from "../gateway/types.ts";
 import type Anthropic from "@anthropic-ai/sdk";
 
 type ContentBlock = Anthropic.TextBlock | Anthropic.ToolUseBlock;
 
 export interface ChatScreenContext {
   renderer: CliRenderer;
-  router: GatewayRouter;
+  router: IRouter;
   currentModel: string;
   cwd: string;
   claudeMd: string | undefined;

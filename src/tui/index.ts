@@ -13,6 +13,10 @@ import { mountModelScreen } from "./model-screen.ts";
 import { mountChatScreen } from "./chat-screen.ts";
 import { GatewayRouter } from "../gateway/router.ts";
 import { LocalGateway } from "../gateway/local.ts";
+import { HttpClient } from "../gateway/http-client.ts";
+import type { IRouter } from "../gateway/types.ts";
+import { isDaemonRunning } from "../pid.ts";
+import { loadConfig } from "../config.ts";
 import type Anthropic from "@anthropic-ai/sdk";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
@@ -27,10 +31,19 @@ export interface AppOptions {
 export async function runApp(opts: AppOptions): Promise<void> {
   let currentModel = opts.model;
 
-  // Create gateway router for TUI (local source — no network gateway needed)
-  const router = new GatewayRouter(opts.client);
-  router.register(new LocalGateway());
-  setActiveRouter(router);
+  // Pick dispatcher: connect to daemon via HTTP if it's running, else run locally
+  let dispatcher: IRouter;
+  if (isDaemonRunning()) {
+    const cfg = loadConfig();
+    const token = process.env.GIRLFRIEND_HTTP_TOKEN ?? null;
+    dispatcher = new HttpClient(`http://localhost:${cfg.http.port}`, token);
+    // Note: setActiveRouter is not called here — the daemon owns the router
+  } else {
+    const router = new GatewayRouter(opts.client);
+    router.register(new LocalGateway());
+    setActiveRouter(router);
+    dispatcher = router;
+  }
 
   // Register Task tool executor (runs subagents) — reads currentModel at call time
   setTaskExecutor(async (input, cwd) => {
@@ -107,7 +120,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
     if (initialSessionId != null) lastChatSessionId = initialSessionId;
     screenCleanup = mountChatScreen({
       renderer,
-      router,
+      router: dispatcher,
       currentModel,
       cwd: opts.cwd,
       claudeMd,

@@ -3,7 +3,6 @@
 // Launched via: bun index.ts --daemon start
 
 import Anthropic from "@anthropic-ai/sdk";
-import { writeFileSync, readFileSync, existsSync, unlinkSync, mkdirSync } from "fs";
 import { join } from "path";
 import { startScheduler, stopScheduler } from "./scheduler.ts";
 import { setTaskExecutor, setActiveRouter } from "./tools.ts";
@@ -13,38 +12,13 @@ import { enableDaemonLog, log } from "./daemon-log.ts";
 import { GatewayRouter } from "./gateway/router.ts";
 import { TelegramGateway } from "./gateway/telegram.ts";
 import { WhatsAppGateway } from "./gateway/whatsapp.ts";
+import { HttpServer } from "./gateway/http.ts";
 import { initConfig, config } from "./config.ts";
+import { writePid, clearPid, readPid, isDaemonRunning } from "./pid.ts";
+
+export { readPid, isDaemonRunning } from "./pid.ts";
 
 const DATA_DIR = join(process.env.HOME ?? ".", ".girlfriend");
-const PID_FILE = join(DATA_DIR, "daemon.pid");
-
-// ─── PID file management ──────────────────────────────────────────────────────
-
-export function writePid(): void {
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(PID_FILE, String(process.pid));
-}
-
-export function clearPid(): void {
-  try { unlinkSync(PID_FILE); } catch { /* already gone */ }
-}
-
-export function readPid(): number | null {
-  if (!existsSync(PID_FILE)) return null;
-  const pid = parseInt(readFileSync(PID_FILE, "utf-8").trim());
-  return isNaN(pid) ? null : pid;
-}
-
-export function isDaemonRunning(): boolean {
-  const pid = readPid();
-  if (pid == null) return false;
-  try {
-    process.kill(pid, 0); // signal 0 = check existence only
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 // ─── Daemon start ─────────────────────────────────────────────────────────────
 
@@ -85,6 +59,13 @@ export async function startDaemon(): Promise<void> {
   await router.start();
   setActiveRouter(router);
 
+  // Start HTTP server so TUI can connect to the daemon
+  const httpToken = process.env.GIRLFRIEND_HTTP_TOKEN ?? null;
+  const httpServer = cfg.http.enabled
+    ? new HttpServer(router, cfg.http.port, httpToken)
+    : null;
+  httpServer?.start();
+
   // Graceful shutdown
   let shuttingDown = false;
   async function shutdown(signal: string) {
@@ -92,6 +73,7 @@ export async function startDaemon(): Promise<void> {
     shuttingDown = true;
     log("info", `received ${signal}, shutting down`);
     stopScheduler();
+    httpServer?.stop();
     await router.stop();
     clearPid();
     log("info", "daemon stopped");

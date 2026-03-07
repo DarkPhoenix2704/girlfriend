@@ -2,9 +2,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { runApp } from "./src/tui.ts";
 import { createSession, listSessions, getSession, deleteSession, formatAge, listCronJobs, listMemories } from "./src/sessions.ts";
 import {
-  startDaemon, stopDaemon, daemonStatus, isDaemonRunning, readPid,
+  startDaemon, stopDaemon, daemonStatus,
   printLaunchdPlist, printSystemdUnit,
 } from "./src/daemon.ts";
+import { isDaemonRunning, readPid } from "./src/pid.ts";
 
 // ─── Auth ──────────────────────────────────────────────────────────────────────
 const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;

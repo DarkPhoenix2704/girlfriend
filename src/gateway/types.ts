@@ -58,3 +58,12 @@ export interface Gateway {
   send(msg: OutgoingMessage): Promise<void>;
   stop(): Promise<void>;
 }
+
+/**
+ * Minimal router interface used by the TUI chat-screen.
+ * Implemented by both GatewayRouter (direct, no daemon) and HttpClient (daemon mode).
+ */
+export interface IRouter {
+  dispatch(msg: IncomingMessage, opts?: DispatchOptions): Promise<DispatchResult>;
+  compact(sessionId: number, model: string, cwd: string, claudeMd?: string, claudeMdPath?: string): Promise<string>;
+}

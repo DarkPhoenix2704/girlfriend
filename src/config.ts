@@ -35,6 +35,12 @@ export interface Config {
     consolidation_enabled: boolean;
     consolidation_schedule: string;
   };
+  http: {
+    /** Enable the local HTTP gateway for TUI → daemon communication */
+    enabled: boolean;
+    /** Port for the HTTP server (default 7070) */
+    port: number;
+  };
 }
 
 const DEFAULTS: Config = {
@@ -45,6 +51,7 @@ const DEFAULTS: Config = {
   search:   { country: "IN", count: 5 },
   notify:   { channel: "telegram", chat_id: "" },
   memory:   { consolidation_enabled: true, consolidation_schedule: "0 3 * * *" },
+  http:     { enabled: true, port: 7070 },
 };
 
 let _config: Config | null = null;
@@ -117,6 +124,11 @@ chat_id = ""           # your Telegram chat_id or WhatsApp number
 [memory]
 consolidation_enabled = true
 consolidation_schedule = "0 3 * * *"   # nightly at 3am
+
+[http]
+enabled = true
+port = 7070   # TUI connects here when daemon is running
+# Set GIRLFRIEND_HTTP_TOKEN env var to require auth
 `;
   writeFileSync(CONFIG_PATH, starter, "utf-8");
   console.log(`created starter config at ${CONFIG_PATH}`);
