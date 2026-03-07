@@ -6,7 +6,7 @@ import {
   getSessionByExternalId, createSession, getSession,
   loadMessages, loadReadFiles,
   appendMessages, saveCompactionMessages,
-  saveReadFiles, addTokens, logEvent,
+  saveReadFiles, addTokens, logEvent, listMemories,
 } from "../sessions.ts";
 import { runAgent } from "../agent.ts";
 import { compact } from "../compaction.ts";
@@ -17,13 +17,77 @@ import type { IncomingMessage, OutgoingMessage, Gateway, DispatchOptions, Dispat
 
 const DEFAULT_MODEL = process.env.GIRLFRIEND_MODEL ?? "claude-sonnet-4-6";
 
-// Per-session lock — prevents overlapping agent runs for the same session
+// Per-session lock — prevents overlapping agent runs for the same session.
+// If the previous run is still locked after 5 minutes (e.g. crashed), we escape it.
 const _locks = new Map<number, Promise<void>>();
+const LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 function withSessionLock<T>(sessionId: number, fn: () => Promise<T>): Promise<T> {
   const prev = _locks.get(sessionId) ?? Promise.resolve();
-  const next = prev.then(fn);
+  const prevWithTimeout = Promise.race([
+    prev,
+    new Promise<void>((resolve) => setTimeout(resolve, LOCK_TIMEOUT_MS)),
+  ]);
+  const next = prevWithTimeout.then(fn);
   _locks.set(sessionId, next.then(() => {}).catch(() => {}));
   return next;
+}
+
+/** Collect up to 20 memory facts and format them as a bullet list. */
+function loadMemoriesString(): string {
+  const facts = listMemories({ limit: 20 });
+  if (facts.length === 0) return "";
+  return facts.map((f) => `- ${f.key}: ${f.value}`).join("\n");
+}
+
+/** Wrap a gateway message callback with a 2-second batcher per externalId. */
+function makeBatcher(
+  handler: (msg: IncomingMessage) => Promise<void>,
+  delayMs = 2_000,
+): (msg: IncomingMessage) => Promise<void> {
+  const pending = new Map<string, {
+    texts: string[];
+    lastMsg: IncomingMessage;
+    timer: ReturnType<typeof setTimeout>;
+    waiters: Array<{ resolve: () => void; reject: (e: unknown) => void }>;
+  }>();
+
+  async function fire(key: string) {
+    const entry = pending.get(key);
+    if (!entry) return;
+    pending.delete(key);
+    const text = entry.texts.length === 1
+      ? entry.texts[0]!
+      : entry.texts.join("\n\n---\n\n");
+    try {
+      await handler({ ...entry.lastMsg, text });
+      for (const { resolve } of entry.waiters) resolve();
+    } catch (err) {
+      for (const { reject } of entry.waiters) reject(err);
+    }
+  }
+
+  return (msg: IncomingMessage): Promise<void> => {
+    const key = msg.externalId;
+    const entry = pending.get(key);
+    const p = new Promise<void>((resolve, reject) => {
+      if (entry) {
+        clearTimeout(entry.timer);
+        entry.texts.push(msg.text);
+        entry.lastMsg = msg;
+        entry.waiters.push({ resolve, reject });
+        entry.timer = setTimeout(() => fire(key), delayMs);
+      } else {
+        const newEntry = {
+          texts: [msg.text],
+          lastMsg: msg,
+          timer: setTimeout(() => fire(key), delayMs),
+          waiters: [{ resolve, reject }],
+        };
+        pending.set(key, newEntry);
+      }
+    });
+    return p;
+  };
 }
 
 /** Split long text into chunks at word/newline boundaries. */
@@ -56,7 +120,8 @@ export class GatewayRouter {
 
   async start(): Promise<void> {
     for (const gw of this.gateways.values()) {
-      await gw.start((msg) => this.dispatch(msg).then(() => {}));
+      const batched = makeBatcher((msg) => this.dispatch(msg).then(() => {}));
+      await gw.start(batched);
       log("info", `gateway started: ${gw.source}`);
     }
   }
@@ -111,6 +176,9 @@ export class GatewayRouter {
       setActiveSession(sessionId);
 
       try {
+        // Inject memories into system prompt for async gateway sessions (WhatsApp/Telegram/cron)
+        const memories = msg.source !== "local" ? loadMemoriesString() : undefined;
+
         const result = await runAgent(msg.text, {
           client: this.client,
           model,
@@ -118,6 +186,7 @@ export class GatewayRouter {
           cwd: options.cwd ?? process.cwd(),
           claudeMd: options.claudeMd,
           claudeMdPath: options.claudeMdPath,
+          memories,
           history,
           readFiles,
           onText:       options.streaming?.onText,

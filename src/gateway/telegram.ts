@@ -4,6 +4,7 @@
 import { Bot, type Context } from "grammy";
 import { log } from "../daemon-log.ts";
 import type { Gateway, IncomingMessage, OutgoingMessage } from "./types.ts";
+import { splitMessage } from "./router.ts";
 
 const ALLOWED_IDS: Set<number> = new Set(
   (process.env.TELEGRAM_ALLOWED_IDS ?? "")
@@ -63,12 +64,23 @@ export class TelegramGateway implements Gateway {
         return;
       }
 
-      await onMessage({
-        source: "telegram",
-        externalId: String(chatId),
-        senderName: ctx.from?.first_name ?? ctx.from?.username,
-        text: ctx.message!.text!,
-      });
+      // Show typing indicator while agent processes; keep refreshing every 4s
+      let typingInterval: ReturnType<typeof setInterval> | null = null;
+      try {
+        await this.bot!.api.sendChatAction(chatId, "typing").catch(() => {});
+        typingInterval = setInterval(() => {
+          this.bot?.api.sendChatAction(chatId, "typing").catch(() => {});
+        }, 4_000);
+
+        await onMessage({
+          source: "telegram",
+          externalId: String(chatId),
+          senderName: ctx.from?.first_name ?? ctx.from?.username,
+          text: ctx.message!.text!,
+        });
+      } finally {
+        if (typingInterval) clearInterval(typingInterval);
+      }
     });
 
     this.bot.catch((err) => {
@@ -84,12 +96,12 @@ export class TelegramGateway implements Gateway {
   async send(msg: OutgoingMessage): Promise<void> {
     if (!this.bot) return;
     const chatId = parseInt(msg.externalId);
-    // Telegram max message length is 4096 chars
-    const text = msg.text.slice(0, 4096);
-    await this.bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" }).catch(async () => {
-      // Markdown parse failure — retry as plain text
-      await this.bot!.api.sendMessage(chatId, msg.text.slice(0, 4096));
-    });
+    for (const chunk of splitMessage(msg.text, 4096)) {
+      await this.bot.api.sendMessage(chatId, chunk, { parse_mode: "Markdown" }).catch(async () => {
+        // Markdown parse failure — retry as plain text
+        await this.bot!.api.sendMessage(chatId, chunk);
+      });
+    }
   }
 
   async stop(): Promise<void> {

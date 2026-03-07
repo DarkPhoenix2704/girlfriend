@@ -22,6 +22,8 @@ export interface AgentOptions {
   claudeMd?: string;
   /** CLAUDE.md file path (used in injection header) */
   claudeMdPath?: string;
+  /** Serialised memory facts to inject into the system prompt */
+  memories?: string;
   /** Tools to expose to the agent (subset of TOOL_SCHEMAS names) */
   tools?: string[];
   /** Max number of agent turns before stopping (0 = unlimited) */
@@ -110,6 +112,7 @@ export async function runAgent(
     model,
     claudeMd: options.claudeMd,
     claudeMdPath: options.claudeMdPath,
+    memories: options.memories,
   });
 
   const userContent = prompt;
