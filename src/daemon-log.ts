@@ -22,8 +22,10 @@ export function log(
   const entry = { ts: new Date().toISOString(), level, msg, ...data };
   const line = JSON.stringify(entry);
   if (_enabled) {
+    // Daemon mode — write to file only, keep terminal clean
     try { appendFileSync(LOG_PATH, line + "\n"); } catch { /* disk full etc */ }
+  } else {
+    // Foreground mode — write to stderr so the user can see output
+    process.stderr.write(line + "\n");
   }
-  // Always write to stderr so foreground runs see output
-  process.stderr.write(line + "\n");
 }

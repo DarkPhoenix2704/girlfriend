@@ -24,7 +24,8 @@ const ALLOWED_NUMBERS: Set<string> = new Set(
 function isAllowed(jid: string): boolean {
   if (ALLOWED_NUMBERS.size === 0) return true;
   const number = jid.split("@")[0] ?? "";
-  return ALLOWED_NUMBERS.has(number);
+  // Match against full JID or just the number prefix
+  return ALLOWED_NUMBERS.has(number) || ALLOWED_NUMBERS.has(jid);
 }
 
 /** Recursively unwrap ephemeral/viewOnce/document-with-caption wrappers. */
@@ -177,11 +178,10 @@ export class WhatsAppGateway implements Gateway {
           await this.sock?.sendPresenceUpdate("composing", jid);
         } catch { /* non-fatal */ }
 
-        const number = jid.split("@")[0] ?? jid;
         try {
           await this.onMessage?.({
             source: "whatsapp",
-            externalId: number,
+            externalId: jid,          // store full JID ("xxx@lid" or "xxx@s.whatsapp.net")
             senderName: msg.pushName ?? undefined,
             text: text.trim(),
           });
@@ -195,7 +195,11 @@ export class WhatsAppGateway implements Gateway {
 
   async send(msg: OutgoingMessage): Promise<void> {
     if (!this.sock) return;
-    const jid = `${msg.externalId}@s.whatsapp.net`;
+    // externalId is the full JID stored at receive time — use it directly.
+    // Fall back to @s.whatsapp.net only for old sessions that stored just the number.
+    const jid = msg.externalId.includes("@")
+      ? msg.externalId
+      : `${msg.externalId}@s.whatsapp.net`;
     await this.sock.sendMessage(jid, { text: msg.text });
   }
 
