@@ -21,7 +21,8 @@ type ContentBlock = Anthropic.TextBlock | Anthropic.ToolUseBlock;
 
 export interface ChatScreenContext {
   renderer: CliRenderer;
-  router: IRouter;
+  localRouter: IRouter;
+  daemonRouter: IRouter | null;
   currentModel: string;
   cwd: string;
   claudeMd: string | undefined;
@@ -36,7 +37,12 @@ export interface ChatScreenContext {
 }
 
 export function mountChatScreen(ctx: ChatScreenContext): () => void {
-  const { renderer, router } = ctx;
+  const { renderer } = ctx;
+
+  // Mode: "local" runs agent in TUI process; "daemon" forwards to daemon via HTTP
+  type Mode = "local" | "daemon";
+  let mode: Mode = ctx.daemonRouter ? "daemon" : "local";
+  const router = () => mode === "daemon" && ctx.daemonRouter ? ctx.daemonRouter : ctx.localRouter;
   const syntax = SyntaxStyle.create();
 
   let sessionId: number | null = ctx.initialSessionId;
@@ -61,10 +67,15 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
   headerInfo.add(new TextRenderable(renderer, { content: "girlfriend", fg: PINK }));
   const headerModelText = new TextRenderable(renderer, { content: ctx.currentModel, fg: MUTED });
   headerInfo.add(headerModelText);
+  const headerModeText = new TextRenderable(renderer, {
+    content: ctx.daemonRouter ? `mode: ${mode}` : "mode: local",
+    fg: MUTED,
+  });
   headerSessionText = new TextRenderable(renderer, {
     content: sessionId != null ? `#${sessionId}  ·  ${session!.name}` : "new session", fg: MUTED,
   });
   headerInfo.add(headerSessionText);
+  if (ctx.daemonRouter) headerInfo.add(headerModeText);
   if (ctx.updateNotice) {
     headerInfo.add(new TextRenderable(renderer, {
       content: `update available: ${ctx.updateNotice}  →  bunx gf-uwu`, fg: YELLOW,
@@ -402,6 +413,15 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
       return;
     }
     if (value === "/model")  { ctx.onModelScreenRequested(); return; }
+    if (value.startsWith("/mode")) {
+      const arg = value.slice(5).trim();
+      if (!ctx.daemonRouter) { addLine("  daemon not running — local mode only"); return; }
+      const next: Mode = arg === "local" ? "local" : arg === "daemon" ? "daemon" : mode === "daemon" ? "local" : "daemon";
+      mode = next;
+      headerModeText.content = `mode: ${mode}`;
+      addLine(`  switched to ${mode} mode`);
+      return;
+    }
     if (value === "/reset") {
       // Start a fresh session
       ctx.onNewChatRequested();
@@ -420,7 +440,7 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
         statusLine.content = `  ↻ compacting${dots[dotIdx]}`;
       }, 400);
       try {
-        await router.compact(sessionId, ctx.currentModel, ctx.cwd, ctx.claudeMd, ctx.claudeMdPath);
+        await router().compact(sessionId, ctx.currentModel, ctx.cwd, ctx.claudeMd, ctx.claudeMdPath);
         clearInterval(dotTimer);
         statusLine.content = "  ↻ compacted";
       } catch (err) {
@@ -449,7 +469,7 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
     const dispatchSessionId: number | null = sessionId;
 
     try {
-      const result = await router.dispatch(
+      const result = await router().dispatch(
         { source: "local", externalId: "local", text: value },
         {
           sessionId: dispatchSessionId,

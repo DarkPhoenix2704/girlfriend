@@ -31,19 +31,19 @@ export interface AppOptions {
 export async function runApp(opts: AppOptions): Promise<void> {
   let currentModel = opts.model;
 
-  // Pick dispatcher: connect to daemon via HTTP if it's running, else run locally
-  let dispatcher: IRouter;
-  if (isDaemonRunning()) {
-    const cfg = loadConfig();
-    const token = process.env.GIRLFRIEND_HTTP_TOKEN ?? null;
-    dispatcher = new HttpClient(`http://localhost:${cfg.http.port}`, token);
-    // Note: setActiveRouter is not called here — the daemon owns the router
-  } else {
-    const router = new GatewayRouter(opts.client);
-    router.register(new LocalGateway());
-    setActiveRouter(router);
-    dispatcher = router;
-  }
+  // Always create a local router (tools run on this machine)
+  const localRouter = new GatewayRouter(opts.client);
+  localRouter.register(new LocalGateway());
+  setActiveRouter(localRouter);
+
+  // If daemon is running, also create an HTTP client for daemon mode
+  const daemonRouter: IRouter | null = isDaemonRunning()
+    ? (() => {
+        const cfg = loadConfig();
+        const token = process.env.GIRLFRIEND_HTTP_TOKEN ?? null;
+        return new HttpClient(`http://localhost:${cfg.http.port}`, token);
+      })()
+    : null;
 
   // Register Task tool executor (runs subagents) — reads currentModel at call time
   setTaskExecutor(async (input, cwd) => {
@@ -120,7 +120,8 @@ export async function runApp(opts: AppOptions): Promise<void> {
     if (initialSessionId != null) lastChatSessionId = initialSessionId;
     screenCleanup = mountChatScreen({
       renderer,
-      router: dispatcher,
+      localRouter,
+      daemonRouter,
       currentModel,
       cwd: opts.cwd,
       claudeMd,
