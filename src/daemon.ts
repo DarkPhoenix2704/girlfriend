@@ -1,4 +1,4 @@
-// Daemon entry point — runs openclaw 24/7 without TUI.
+// Daemon entry point — runs girlfriend 24/7 without TUI.
 // Manages PID file, starts scheduler, handles graceful shutdown.
 // Launched via: bun index.ts --daemon start
 
@@ -11,7 +11,7 @@ import { createTaskExecutor } from "./subagent.ts";
 import { listCronJobs } from "./sessions.ts";
 import { enableDaemonLog, log } from "./daemon-log.ts";
 
-const DATA_DIR = join(process.env.HOME ?? ".", ".openclaw");
+const DATA_DIR = join(process.env.HOME ?? ".", ".girlfriend");
 const PID_FILE = join(DATA_DIR, "daemon.pid");
 const MODEL = process.env.OPENCLAW_MODEL ?? "claude-sonnet-4-6";
 
@@ -126,7 +126,7 @@ export function printLaunchdPlist(): void {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.openclaw.daemon</string>
+  <string>com.girlfriend.daemon</string>
   <key>ProgramArguments</key>
   <array>
     <string>${bunPath}</string>
@@ -156,7 +156,7 @@ export function printSystemdUnit(): void {
   const bunPath = Bun.which("bun") ?? "/usr/local/bin/bun";
   const indexPath = join(process.cwd(), "index.ts");
   const unit = `[Unit]
-Description=openclaw daemon
+Description=girlfriend daemon
 After=network.target
 
 [Service]

@@ -61,8 +61,8 @@ Runs 24/7, accepts messages from Telegram/WhatsApp, manages cron jobs, delegates
 
 - [ ] `src/daemon.ts` — new entry point (replaces TUI for server mode)
 - [ ] Graceful shutdown on SIGINT/SIGTERM — flush pending DB writes, cancel in-flight agents
-- [ ] PID file at `~/.openclaw/daemon.pid` — prevent double-start
-- [ ] Structured logging to `~/.openclaw/daemon.log` (JSON lines, rotated daily)
+- [ ] PID file at `~/.girlfriend/daemon.pid` — prevent double-start
+- [ ] Structured logging to `~/.girlfriend/daemon.log` (JSON lines, rotated daily)
 - [ ] `index.ts` — add `--daemon` flag to launch `src/daemon.ts` instead of TUI
 
 ### 2.2 Scheduler
@@ -84,7 +84,7 @@ Runs 24/7, accepts messages from Telegram/WhatsApp, manages cron jobs, delegates
 
 ### 2.4 Process management
 
-- [ ] Add `launchd` plist for macOS autostart at `~/Library/LaunchAgents/com.openclaw.daemon.plist`
+- [ ] Add `launchd` plist for macOS autostart at `~/Library/LaunchAgents/com.girlfriend.daemon.plist`
 - [ ] Add `systemd` unit file for Linux autostart at `~/.config/systemd/user/openclaw.service`
 - [ ] CLI commands: `bun index.ts --daemon start|stop|status|restart`
 
@@ -154,7 +154,7 @@ Runs 24/7, accepts messages from Telegram/WhatsApp, manages cron jobs, delegates
 ### 4.4 Security & sandboxing
 
 - [ ] Browser runs with no stored cookies/profiles by default (incognito)
-- [ ] Allowlist/blocklist of domains configurable in `~/.openclaw/config.toml`
+- [ ] Allowlist/blocklist of domains configurable in `~/.girlfriend/config.toml`
 - [ ] Sensitive actions (login, form submit, payments) require explicit user confirmation tool
 
 ---
@@ -166,7 +166,7 @@ Runs 24/7, accepts messages from Telegram/WhatsApp, manages cron jobs, delegates
 ### 5.1 Subagent framework (platform — we build)
 
 - [ ] `src/agents/types.ts` — `AgentDefinition` interface (name, description, tools, systemPrompt, namespace, model)
-- [ ] `src/agents/registry.ts` — auto-discovers agent definitions from `~/.openclaw/agents/`, similar to tool registry
+- [ ] `src/agents/registry.ts` — auto-discovers agent definitions from `~/.girlfriend/agents/`, similar to tool registry
 - [ ] `src/tools/impl/delegate.ts` — orchestrator tool to hand off to a named subagent, returns result
 - [ ] Subagents can read from their own memory namespace but write to shared memories too
 - [ ] Subagent depth guard — subagents cannot spawn other subagents (already partially in place)
@@ -190,7 +190,7 @@ Runs 24/7, accepts messages from Telegram/WhatsApp, manages cron jobs, delegates
 
 ### 6.1 Config file
 
-- [ ] `~/.openclaw/config.toml` — user preferences, API keys, enabled gateways, browser settings
+- [ ] `~/.girlfriend/config.toml` — user preferences, API keys, enabled gateways, browser settings
 - [ ] `src/config.ts` — loads and validates config, provides typed access
 - [ ] Secrets never stored in config — use env vars or a secrets file with restricted permissions
 

@@ -1,10 +1,10 @@
 // Structured JSON logger for daemon mode.
-// Writes to ~/.openclaw/daemon.log (JSON lines) and stderr.
+// Writes to ~/.girlfriend/daemon.log (JSON lines) and stderr.
 
 import { appendFileSync, mkdirSync } from "fs";
 import { join } from "path";
 
-const LOG_DIR = join(process.env.HOME ?? ".", ".openclaw");
+const LOG_DIR = join(process.env.HOME ?? ".", ".girlfriend");
 const LOG_PATH = join(LOG_DIR, "daemon.log");
 
 let _enabled = false;

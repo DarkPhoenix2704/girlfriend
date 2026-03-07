@@ -6,8 +6,8 @@ import { join } from "path";
 import { mkdirSync } from "fs";
 import type Anthropic from "@anthropic-ai/sdk";
 
-// DB lives in ~/.openclaw/data.db
-const DB_DIR = join(process.env.HOME ?? ".", ".openclaw");
+// DB lives in ~/.girlfriend/data.db
+const DB_DIR = join(process.env.HOME ?? ".", ".girlfriend");
 const DB_PATH = join(DB_DIR, "data.db");
 export interface Session {
   id: number;
