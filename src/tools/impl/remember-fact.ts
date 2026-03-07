@@ -23,12 +23,14 @@ Confidence: 0.0–1.0, default 1.0. Use lower values for inferred/uncertain fact
     },
   },
 
-  execute(input) {
+  execute(input, ctx) {
     const key = input.key as string;
     const value = input.value as string;
+    // Explicit namespace in input takes precedence; otherwise default to the caller's user namespace
+    const namespace = (input.namespace as string | undefined) ?? ctx.namespace;
     upsertMemory(key, value, {
       category: input.category as string | undefined,
-      namespace: input.namespace as string | undefined,
+      namespace,
       confidence: input.confidence as number | undefined,
     });
     return { content: `Remembered: [${key}] ${value}` };

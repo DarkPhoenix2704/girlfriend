@@ -47,6 +47,8 @@ export interface AgentOptions {
   signal?: AbortSignal;
   /** Session ID for event logging */
   sessionId?: number | null;
+  /** Caller's namespace for scoping memories (e.g. "telegram:12345"). Undefined for local/cron. */
+  namespace?: string;
   /** AskUser callback — wires up the AskUserQuestion tool for interactive sessions. */
   askUser?: (question: string, options?: string[]) => Promise<string>;
 }
@@ -269,7 +271,7 @@ export async function runAgent(
     const concurrentResults = await Promise.all(
       concurrent.map(async (block) => {
         options.onToolUse?.(block.name, block.input, block.id);
-        const result = await executeTool(block.name, block.input, readFiles, cwd, subagentCallbacks, sessionId, askUser);
+        const result = await executeTool(block.name, block.input, readFiles, cwd, subagentCallbacks, sessionId, askUser, options.namespace);
         options.onToolResult?.(block.name, result.content, block.id);
         // Accumulate subagent tokens (Task tool carries them in the result)
         totalInputTokens += result.inputTokens ?? 0;

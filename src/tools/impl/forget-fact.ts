@@ -15,11 +15,13 @@ export const definition: ToolDefinition = {
     },
   },
 
-  execute(input) {
-    const deleted = deleteMemory(input.key as string, input.namespace as string | undefined);
+  execute(input, ctx) {
+    // Explicit namespace in input takes precedence; otherwise default to the caller's user namespace
+    const namespace = (input.namespace as string | undefined) ?? ctx.namespace;
+    const deleted = deleteMemory(input.key as string, namespace);
     return {
       content: deleted
-        ? `Forgot: ${input.key}${input.namespace ? ` (namespace: ${input.namespace})` : ""}`
+        ? `Forgot: ${input.key}${namespace ? ` (namespace: ${namespace})` : ""}`
         : `No fact found for key: ${input.key}`,
     };
   },

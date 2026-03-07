@@ -20,11 +20,12 @@ Provide a query for full-text search, or leave it empty to list facts filtered b
     },
   },
 
-  execute(input) {
+  execute(input, ctx) {
     const query = (input.query as string | undefined) ?? "";
     const options = {
       category: input.category as string | undefined,
-      namespace: input.namespace as string | undefined,
+      // Explicit namespace in input takes precedence; otherwise default to the caller's user namespace
+      namespace: (input.namespace as string | undefined) ?? ctx.namespace,
       limit: input.limit as number | undefined,
     };
 

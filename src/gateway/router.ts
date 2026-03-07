@@ -38,15 +38,15 @@ function withSessionLock<T>(sessionId: number, fn: () => Promise<T>): Promise<T>
   return next;
 }
 
-/** Return memories relevant to the current message, falling back to recent if no FTS match. */
-function loadMemoriesString(query: string): string {
+/** Return memories relevant to the current message, scoped to the caller's namespace. */
+function loadMemoriesString(query: string, namespace: string): string {
   let facts: import("../sessions.ts").MemoryFact[];
   try {
-    facts = searchMemories(query, { limit: 10 });
+    facts = searchMemories(query, { limit: 10, namespace });
   } catch {
     facts = [];
   }
-  if (facts.length === 0) facts = listMemories({ limit: 10 });
+  if (facts.length === 0) facts = listMemories({ limit: 10, namespace });
   if (facts.length === 0) return "";
   return facts.map((f) => `- ${f.key}: ${f.value}`).join("\n");
 }
@@ -172,6 +172,11 @@ export class GatewayRouter {
   async dispatch(msg: IncomingMessage, options: DispatchOptions = {}): Promise<DispatchResult> {
     const model = options.model ?? DEFAULT_MODEL;
 
+    // Namespace scopes memories to the specific user; only set for user-facing gateways.
+    const namespace = (msg.source === "telegram" || msg.source === "whatsapp")
+      ? `${msg.source}:${msg.externalId}`
+      : undefined;
+
     // ── Resolve session ───────────────────────────────────────────────────────
     let sessionId: number;
 
@@ -182,7 +187,7 @@ export class GatewayRouter {
       // Explicitly create a new session
       const name = options.newSessionName
         ?? `${msg.source}-${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
-      sessionId = createSession(name, model, msg.source, msg.externalId);
+      sessionId = createSession(name, model, msg.source, msg.externalId, namespace);
       log("info", `new session created`, { source: msg.source, sessionId });
     } else {
       // Look up by source + externalId (gateway mode)
@@ -193,7 +198,7 @@ export class GatewayRouter {
         const name = msg.senderName
           ? `${msg.source}:${msg.senderName}`
           : `${msg.source}:${msg.externalId}`;
-        sessionId = createSession(name, model, msg.source, msg.externalId);
+        sessionId = createSession(name, model, msg.source, msg.externalId, namespace);
         log("info", `new session for ${msg.source}:${msg.externalId}`, { sessionId });
       }
     }
@@ -206,13 +211,14 @@ export class GatewayRouter {
       const savedLength = history.length;
 
       try {
-        // Inject relevant memories for async gateway sessions (WhatsApp/Telegram/cron)
-        const memories = msg.source !== "local" ? loadMemoriesString(msg.text) : undefined;
+        // Inject memories scoped to this user's namespace (telegram/whatsapp only)
+        const memories = namespace ? loadMemoriesString(msg.text, namespace) : undefined;
 
         const result = await runAgent(msg.text, {
           client: this.client,
           model,
           sessionId,
+          namespace,
           cwd: options.cwd ?? process.cwd(),
           claudeMd: options.claudeMd,
           claudeMdPath: options.claudeMdPath,

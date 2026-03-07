@@ -42,10 +42,10 @@ export async function startDaemon(): Promise<void> {
     : new Anthropic();
 
   // Register task executor for subagents
-  setTaskExecutor(async (input, cwd, callbacks, sessionId) => {
+  setTaskExecutor(async (input, cwd, callbacks, sessionId, namespace) => {
     const executor = createTaskExecutor(
       { Explore: { description: "Codebase exploration", prompt: "", tools: ["Read", "Glob", "Grep", "WebFetch"] } },
-      { client, parentModel: MODEL, cwd, sessionId },
+      { client, parentModel: MODEL, cwd, sessionId, namespace },
       callbacks,
     );
     return executor(input);

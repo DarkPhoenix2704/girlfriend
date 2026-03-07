@@ -47,10 +47,10 @@ export async function runApp(opts: AppOptions): Promise<void> {
     : null;
 
   // Register Task tool executor — reads currentModel, callbacks, and sessionId at call time
-  setTaskExecutor(async (input, cwd, callbacks, sessionId) => {
+  setTaskExecutor(async (input, cwd, callbacks, sessionId, namespace) => {
     const executor = createTaskExecutor(
       { Explore: { description: "Codebase exploration", prompt: "", tools: ["Read", "Glob", "Grep", "WebFetch"] } },
-      { client: opts.client, parentModel: currentModel, cwd, sessionId },
+      { client: opts.client, parentModel: currentModel, cwd, sessionId, namespace },
       callbacks,
     );
     return executor(input);

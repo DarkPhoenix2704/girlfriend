@@ -21,6 +21,7 @@ export interface SubagentRunOptions {
   depth?: number; // recursion depth — subagents cannot spawn subagents (depth > 0 → no Task tool)
   callbacks?: SubagentCallbacks;
   sessionId?: number | null; // parent session — used for event logging, no separate subagent session
+  namespace?: string; // caller's namespace, threaded through so memory tools stay scoped
 }
 
 const MAX_SUBAGENT_DEPTH = 1;
@@ -130,7 +131,7 @@ export async function runSubagent(
     const concurrentResults = await Promise.all(
       concurrent.map(async (block) => {
         cbs?.onToolUse?.(block.name, block.input, `sub:${block.id}`);
-        const res = await executeTool(block.name, block.input, readFiles, options.cwd, undefined, options.sessionId);
+        const res = await executeTool(block.name, block.input, readFiles, options.cwd, undefined, options.sessionId, undefined, options.namespace);
         cbs?.onToolResult?.(block.name, res.content, `sub:${block.id}`);
         return { type: "tool_result" as const, tool_use_id: block.id, content: res.content, is_error: res.is_error };
       })
@@ -139,7 +140,7 @@ export async function runSubagent(
 
     for (const block of sequential) {
       cbs?.onToolUse?.(block.name, block.input, `sub:${block.id}`);
-      const res = await executeTool(block.name, block.input, readFiles, options.cwd);
+      const res = await executeTool(block.name, block.input, readFiles, options.cwd, undefined, options.sessionId, undefined, options.namespace);
       cbs?.onToolResult?.(block.name, res.content, `sub:${block.id}`);
       toolResults.push({ type: "tool_result" as const, tool_use_id: block.id, content: res.content, is_error: res.is_error });
     }
@@ -159,7 +160,7 @@ export function createTaskExecutor(
   options: Omit<SubagentRunOptions, "depth">,
   callbacks?: SubagentCallbacks,
 ) {
-  return async (input: unknown): Promise<import("./tools/types.ts").ToolResult> => {
+  return async (input: unknown, _cwd?: string, _callbacks?: SubagentCallbacks, _sessionId?: number | null, namespace?: string): Promise<import("./tools/types.ts").ToolResult> => {
     const { description, prompt, subagent_type } = input as {
       description: string;
       prompt: string;
@@ -175,7 +176,7 @@ export function createTaskExecutor(
     };
 
     try {
-      const r = await runSubagent(prompt, definition, { ...options, depth: 1, callbacks });
+      const r = await runSubagent(prompt, definition, { ...options, depth: 1, callbacks, namespace });
       return {
         content: r.text || "(subagent completed with no output)",
         inputTokens: r.inputTokens,

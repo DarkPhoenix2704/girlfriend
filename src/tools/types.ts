@@ -20,8 +20,10 @@ export interface ToolContext {
   cwd: string;
   /** Session ID for event logging — threaded per-call to avoid module-level global collisions. */
   sessionId?: number | null;
+  /** Caller's namespace for scoping memories (e.g. "telegram:12345"). Undefined for local/cron. */
+  namespace?: string;
   /** Task executor — receives per-call callbacks so subagent events reach the right stream. */
-  taskExecutor?: (input: ToolInput, cwd: string, callbacks?: SubagentCallbacks, sessionId?: number | null) => Promise<ToolResult>;
+  taskExecutor?: (input: ToolInput, cwd: string, callbacks?: SubagentCallbacks, sessionId?: number | null, namespace?: string) => Promise<ToolResult>;
   /** Ask the user a question (with optional choices) and await their reply (TUI only). */
   askUser?: (question: string, options?: string[]) => Promise<string>;
   /** Streaming callbacks from the parent agent — passed through to subagents. */

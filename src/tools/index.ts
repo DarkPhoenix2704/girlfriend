@@ -53,6 +53,7 @@ export async function executeTool(
   subagentCallbacks?: import("./types.ts").SubagentCallbacks,
   sessionId?: number | null,
   askUser?: ToolContext["askUser"],
+  namespace?: string,
 ) {
   const tool = registry.get(name);
   if (!tool) return { content: `<tool_use_error>Unknown tool: ${name}</tool_use_error>`, is_error: true };
@@ -78,6 +79,7 @@ export async function executeTool(
     readFiles,
     cwd,
     sessionId,
+    namespace,
     taskExecutor: _taskExecutor ?? undefined,
     askUser,
     subagentCallbacks,

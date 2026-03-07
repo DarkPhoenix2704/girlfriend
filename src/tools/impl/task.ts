@@ -15,10 +15,10 @@ export const definition: ToolDefinition = {
     },
   },
 
-  async execute(input, { cwd, taskExecutor, subagentCallbacks, sessionId }) {
+  async execute(input, { cwd, taskExecutor, subagentCallbacks, sessionId, namespace }) {
     if (!taskExecutor) {
       return { content: "<tool_use_error>Task executor not configured — setTaskExecutor() must be called at startup before using the Task tool</tool_use_error>", is_error: true };
     }
-    return taskExecutor(input, cwd, subagentCallbacks, sessionId);
+    return taskExecutor(input, cwd, subagentCallbacks, sessionId, namespace);
   },
 };
