@@ -1,4 +1,5 @@
-// Chat screen — the main interactive conversation view
+// Chat screen — the main interactive conversation view.
+// Session lifecycle and agent execution are delegated to GatewayRouter.
 
 import {
   BoxRenderable,
@@ -11,24 +12,16 @@ import {
 } from "@opentui/core";
 import type { CliRenderer, KeyEvent } from "@opentui/core";
 import { PINK, YELLOW, RED, MUTED, FG, BG } from "./theme.ts";
-import { runAgent } from "../agent.ts";
-import type { RateLimitInfo } from "../agent.ts";
-import { compact } from "../compaction.ts";
-import { buildSystemPrompt } from "../prompts.ts";
-import { TOOL_SCHEMAS } from "../tools.ts";
-import {
-  createSession, getSession, renameSession,
-  loadMessages, loadReadFiles, appendMessages, saveCompactionMessages,
-  saveReadFiles, addTokens,
-} from "../sessions.ts";
+import { renameSession, getSession } from "../sessions.ts";
 import type { Session } from "../sessions.ts";
+import type { GatewayRouter } from "../gateway/router.ts";
 import type Anthropic from "@anthropic-ai/sdk";
 
 type ContentBlock = Anthropic.TextBlock | Anthropic.ToolUseBlock;
 
 export interface ChatScreenContext {
   renderer: CliRenderer;
-  client: Anthropic;
+  router: GatewayRouter;
   currentModel: string;
   cwd: string;
   claudeMd: string | undefined;
@@ -39,64 +32,21 @@ export interface ChatScreenContext {
   onSessionListRequested: () => void;
   onModelScreenRequested: () => void;
   onNewChatRequested: () => void;
-  /** Called when this screen updates the lastChatSessionId */
   onSessionIdChanged: (id: number) => void;
 }
 
 export function mountChatScreen(ctx: ChatScreenContext): () => void {
-  const { renderer } = ctx;
+  const { renderer, router } = ctx;
   const syntax = SyntaxStyle.create();
 
   let sessionId: number | null = ctx.initialSessionId;
-  let session: Session | null = sessionId != null ? getSession(sessionId)! : null;
-  let history = sessionId != null ? loadMessages(sessionId) : [] as ReturnType<typeof loadMessages>;
-  let readFiles = sessionId != null ? loadReadFiles(sessionId) : new Set<string>();
-  let savedLength = history.length;
-  let pendingCompaction = false;
+  let session: Session | null = sessionId != null ? getSession(sessionId) : null;
   let agentRunning = false;
   let agentAbort: AbortController | null = null;
   let escPrimed = false;
   const pendingTools = new Map<string, TextRenderable>();
   let lastAgentText = "";
   let headerSessionText: TextRenderable;
-
-  // Lazily create session on first message
-  function ensureSession(): number {
-    if (sessionId != null) return sessionId;
-    const name = `session-${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
-    sessionId = createSession(name, ctx.currentModel);
-    ctx.onSessionIdChanged(sessionId);
-    session = getSession(sessionId)!;
-    headerSessionText.content = `#${sessionId}  ·  ${session.name}`;
-    return sessionId;
-  }
-
-  // ── Auto-save ─────────────────────────────────────────────────────────────
-  const autoSave = setInterval(() => {
-    if (sessionId == null) return;
-    if (pendingCompaction) {
-      saveCompactionMessages(sessionId, history);
-      saveReadFiles(sessionId, readFiles);
-      savedLength = history.length;
-      pendingCompaction = false;
-    } else if (history.length > savedLength) {
-      appendMessages(sessionId, history, savedLength);
-      saveReadFiles(sessionId, readFiles);
-      savedLength = history.length;
-    }
-  }, 3_000);
-
-  function flushAndCleanup() {
-    stopSpinner();
-    clearInterval(autoSave);
-    if (sessionId == null) return;
-    if (pendingCompaction) {
-      saveCompactionMessages(sessionId, history);
-    } else {
-      appendMessages(sessionId, history, savedLength);
-    }
-    saveReadFiles(sessionId, readFiles);
-  }
 
   // ── Layout ────────────────────────────────────────────────────────────────
   const header = new BoxRenderable(renderer, {
@@ -133,7 +83,6 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
 
   // ── Autocomplete bar ──────────────────────────────────────────────────────
   const COMMANDS = ["/sessions", "/new", "/rename ", "/reset", "/compact", "/model"];
-
   const acBar = new BoxRenderable(renderer, {
     width: "100%", height: 1,
     flexDirection: "row", paddingLeft: 2, gap: 3,
@@ -200,7 +149,7 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
   inputBox.add(inputField);
   renderer.root.add(inputBox);
 
-  function updateRateLimit(info: RateLimitInfo) {
+  function updateRateLimit(info: import("../agent.ts").RateLimitInfo) {
     const parts: string[] = [];
     if (info.unified5hUtilization !== null) {
       const pct = (info.unified5hUtilization * 100).toFixed(0);
@@ -214,12 +163,10 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
     if (info.requestsRemaining !== null) parts.push(`${info.requestsRemaining} req`);
     if (info.inputTokensRemaining !== null) parts.push(`${(info.inputTokensRemaining / 1000).toFixed(0)}k in`);
     if (info.outputTokensRemaining !== null) parts.push(`${info.outputTokensRemaining} out`);
-
     if (parts.length > 0) inputBox.title = ` ${parts.join(" · ")} `;
   }
 
   inputField.focus();
-
   inputField.on(InputRenderableEvents.INPUT, () => updateAc(inputField.value));
 
   // Tab cycles through acMatches
@@ -274,15 +221,14 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
       const proc = Bun.spawn([process.env.SHELL || "bash", "-c", cmd], { stdin: "pipe" });
       proc.stdin.write(lastAgentText);
       proc.stdin.end();
-    } catch { /* clipboard unavailable — ignore */ }
+    } catch { /* clipboard unavailable */ }
   };
 
-  // Esc — first press shows warning, second cancels the running agent
+  // Esc — first press shows warning, second cancels agent
   const escCancelLine = new TextRenderable(renderer, {
     content: "", fg: YELLOW, width: "100%", height: 0, paddingLeft: 2,
   });
   renderer.root.add(escCancelLine);
-
   let escPrimedTimer: ReturnType<typeof setTimeout> | null = null;
 
   function clearEscPrimed() {
@@ -346,15 +292,17 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
     const arg = (key: string) => inp[key] ? String(inp[key]).slice(0, 80) : null;
     let summary: string;
     switch (name) {
-      case "Bash":       summary = arg("command") ?? ""; break;
-      case "Read":       summary = arg("file_path") ?? ""; break;
-      case "Write":      summary = arg("file_path") ?? ""; break;
-      case "Edit":       summary = arg("file_path") ?? ""; break;
-      case "Glob":       summary = arg("pattern") ?? ""; break;
-      case "Grep":       summary = arg("pattern") ?? ""; break;
-      case "WebFetch":   summary = arg("url") ?? ""; break;
-      case "Task":       summary = arg("description") ?? arg("prompt") ?? ""; break;
-      default:           summary = Object.values(inp).map(v => String(v).slice(0, 40)).join(", ");
+      case "Bash":        summary = arg("command") ?? ""; break;
+      case "Read":        summary = arg("file_path") ?? ""; break;
+      case "Write":       summary = arg("file_path") ?? ""; break;
+      case "Edit":        summary = arg("file_path") ?? ""; break;
+      case "Glob":        summary = arg("pattern") ?? ""; break;
+      case "Grep":        summary = arg("pattern") ?? ""; break;
+      case "WebFetch":    summary = arg("url") ?? ""; break;
+      case "BrowserOpen": summary = arg("url") ?? ""; break;
+      case "Search":      summary = arg("query") ?? ""; break;
+      case "Task":        summary = arg("description") ?? arg("prompt") ?? ""; break;
+      default:            summary = Object.values(inp).map(v => String(v).slice(0, 40)).join(", ");
     }
     return `⏺ ${name}(${summary})`;
   }
@@ -384,47 +332,54 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
   }
 
   // ── Replay history into chat ───────────────────────────────────────────────
-  const replayResultTexts = new Map<string, TextRenderable>();
+  function replayHistory() {
+    if (sessionId == null) return;
+    const { loadMessages } = require("../sessions.ts") as typeof import("../sessions.ts");
+    const history = loadMessages(sessionId);
+    const replayResultTexts = new Map<string, TextRenderable>();
 
-  for (const msg of history) {
-    if (msg.role === "user") {
-      if (typeof msg.content === "string") {
-        const cleaned = msg.content.replace(/^<system-reminder>[\s\S]*?<\/system-reminder>\n?/, "").trim();
-        if (cleaned) addUserBubble(cleaned);
-      } else if (Array.isArray(msg.content)) {
-        for (const block of msg.content as Anthropic.ToolResultBlockParam[]) {
-          if (block.type !== "tool_result") continue;
-          const rt = replayResultTexts.get(block.tool_use_id);
-          if (!rt) continue;
-          const text = typeof block.content === "string"
-            ? block.content
-            : Array.isArray(block.content)
-              ? block.content.filter((b): b is Anthropic.TextBlockParam => b.type === "text").map(b => b.text).join("")
-              : "";
-          fillToolResult(rt, text || "(no output)");
-          replayResultTexts.delete(block.tool_use_id);
+    for (const msg of history) {
+      if (msg.role === "user") {
+        if (typeof msg.content === "string") {
+          const cleaned = msg.content.replace(/^<system-reminder>[\s\S]*?<\/system-reminder>\n?/, "").trim();
+          if (cleaned) addUserBubble(cleaned);
+        } else if (Array.isArray(msg.content)) {
+          for (const block of msg.content as Anthropic.ToolResultBlockParam[]) {
+            if (block.type !== "tool_result") continue;
+            const rt = replayResultTexts.get(block.tool_use_id);
+            if (!rt) continue;
+            const text = typeof block.content === "string"
+              ? block.content
+              : Array.isArray(block.content)
+                ? block.content.filter((b): b is Anthropic.TextBlockParam => b.type === "text").map(b => b.text).join("")
+                : "";
+            fillToolResult(rt, text || "(no output)");
+            replayResultTexts.delete(block.tool_use_id);
+          }
         }
-      }
-    } else if (msg.role === "assistant") {
-      const blocks: ContentBlock[] = Array.isArray(msg.content)
-        ? msg.content as ContentBlock[]
-        : [{ type: "text", text: String(msg.content) } as Anthropic.TextBlock];
-      let md: MarkdownRenderable | null = null;
-      let mdText = "";
-      for (const block of blocks) {
-        if (block.type === "text" && block.text) {
-          if (!md) md = addAgentBubble().md;
-          mdText += block.text;
-          md.content = mdText;
-          md.streaming = false;
-        } else if (block.type === "tool_use") {
-          if (md) { md.streaming = false; md = null; mdText = ""; }
-          const resultText = addToolCall(block.name, block.input as Record<string, unknown>);
-          replayResultTexts.set(block.id, resultText);
+      } else if (msg.role === "assistant") {
+        const blocks: ContentBlock[] = Array.isArray(msg.content)
+          ? msg.content as ContentBlock[]
+          : [{ type: "text", text: String(msg.content) } as Anthropic.TextBlock];
+        let md: MarkdownRenderable | null = null;
+        let mdText = "";
+        for (const block of blocks) {
+          if (block.type === "text" && block.text) {
+            if (!md) md = addAgentBubble().md;
+            mdText += block.text;
+            md.content = mdText;
+            md.streaming = false;
+          } else if (block.type === "tool_use") {
+            if (md) { md.streaming = false; md = null; mdText = ""; }
+            const resultText = addToolCall(block.name, block.input as Record<string, unknown>);
+            replayResultTexts.set(block.id, resultText);
+          }
         }
       }
     }
   }
+
+  replayHistory();
 
   // ── Input handler ─────────────────────────────────────────────────────────
   inputField.on(InputRenderableEvents.ENTER, async () => {
@@ -434,55 +389,43 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
     inputField.value = "";
 
     // Commands
-    if (value === "/sessions") { flushAndCleanup(); ctx.onSessionListRequested(); return; }
-    if (value === "/new") { flushAndCleanup(); ctx.onNewChatRequested(); return; }
+    if (value === "/sessions") { ctx.onSessionListRequested(); return; }
+    if (value === "/new")      { ctx.onNewChatRequested(); return; }
     if (value.startsWith("/rename ")) {
       const name = value.slice(8).trim();
-      if (name) {
-        const sid = ensureSession();
-        renameSession(sid, name);
-        session = getSession(sid)!;
-        headerSessionText.content = `#${sid}  ·  ${name}`;
+      if (name && sessionId != null) {
+        renameSession(sessionId, name);
+        session = getSession(sessionId);
+        headerSessionText.content = `#${sessionId}  ·  ${name}`;
         addLine(`  renamed to "${name}"`);
       }
       return;
     }
-    if (value === "/model") { flushAndCleanup(); ctx.onModelScreenRequested(); return; }
+    if (value === "/model")  { ctx.onModelScreenRequested(); return; }
     if (value === "/reset") {
-      history = []; readFiles = new Set(); savedLength = 0;
-      addLine("  history cleared");
+      // Start a fresh session
+      ctx.onNewChatRequested();
       return;
     }
     if (value === "/compact") {
-      if (history.length === 0) { addLine("  nothing to compact"); return; }
+      if (sessionId == null) { addLine("  nothing to compact"); return; }
       agentRunning = true;
       inputField.blur();
       const dots = [".", "..", "..."];
       let dotIdx = 0;
-      const compactStatusLine = new TextRenderable(renderer, { content: `  ↻ compacting${dots[0]}`, fg: MUTED, width: "100%" });
-      chat.add(compactStatusLine);
+      const statusLine = new TextRenderable(renderer, { content: `  ↻ compacting${dots[0]}`, fg: MUTED, width: "100%" });
+      chat.add(statusLine);
       const dotTimer = setInterval(() => {
         dotIdx = (dotIdx + 1) % dots.length;
-        compactStatusLine.content = `  ↻ compacting${dots[dotIdx]}`;
+        statusLine.content = `  ↻ compacting${dots[dotIdx]}`;
       }, 400);
       try {
-        const systemPrompt = buildSystemPrompt({
-          tools: TOOL_SCHEMAS.map(t => t.name),
-          cwd: ctx.cwd,
-          platform: process.platform,
-          shell: process.env.SHELL || "bash",
-          model: ctx.currentModel,
-          claudeMd: ctx.claudeMd,
-          claudeMdPath: ctx.claudeMdPath,
-        });
-        const summary = await compact(ctx.client, history, systemPrompt, ctx.currentModel);
-        history = [{ role: "user", content: summary }];
-        pendingCompaction = true;
+        await router.compact(sessionId, ctx.currentModel, ctx.cwd, ctx.claudeMd, ctx.claudeMdPath);
         clearInterval(dotTimer);
-        compactStatusLine.content = "  ↻ compacted";
+        statusLine.content = "  ↻ compacted";
       } catch (err) {
         clearInterval(dotTimer);
-        compactStatusLine.content = `  ✗ ${err instanceof Error ? err.message : String(err)}`;
+        statusLine.content = `  ✗ ${err instanceof Error ? err.message : String(err)}`;
       }
       agentRunning = false;
       inputField.focus();
@@ -490,8 +433,7 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
     }
     if (value === "exit" || value === "quit") { renderer.destroy(); return; }
 
-    // Agent turn
-    ensureSession();
+    // ── Agent turn ────────────────────────────────────────────────────────
     agentRunning = true;
     agentAbort = new AbortController();
     escPrimed = false;
@@ -503,61 +445,69 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
     let bubbleHasContent = false;
     startSpinner(currentBubble.label);
 
+    // If no session yet, create one via the router on first dispatch
+    const dispatchSessionId: number | null = sessionId;
+
     try {
-      const result = await runAgent(value, {
-        client: ctx.client,
-        model: ctx.currentModel,
-        cwd: ctx.cwd,
-        history, readFiles,
-        claudeMd: ctx.claudeMd, claudeMdPath: ctx.claudeMdPath,
-        onText: (chunk) => {
-          if (!currentBubble) currentBubble = addAgentBubble();
-          currentText += chunk;
-          currentBubble.md.content = currentText;
-          bubbleHasContent = true;
-        },
-        onToolUse: (name, inp, id) => {
-          stopSpinner();
-          if (bubbleHasContent) {
-            currentBubble!.md.streaming = false;
-          } else if (currentBubble) {
-            chat.remove(currentBubble.row.id);
-            currentBubble = null;
-          }
-          const resultText = addToolCall(name, inp as Record<string, unknown>);
-          pendingTools.set(id, resultText);
-        },
-        onToolResult: (_name, res, id) => {
-          const pt = pendingTools.get(id);
-          if (pt) {
-            fillToolResult(pt, res);
-            pendingTools.delete(id);
-          }
-          if (bubbleHasContent && currentBubble) {
-            currentBubble.md.streaming = false;
-            currentBubble = null;
-            currentText = "";
-            bubbleHasContent = false;
-          }
-          if (!currentBubble) currentBubble = addAgentBubble();
-          startSpinner(currentBubble.label);
-        },
-        onCompact: () => {
-          pendingCompaction = true;
-          addLine("  ↻ context compacted");
-        },
-        onRateLimit: updateRateLimit,
-        signal: agentAbort.signal,
-      });
+      const result = await router.dispatch(
+        { source: "local", externalId: "local", text: value },
+        {
+          sessionId: dispatchSessionId,
+          newSessionName: `session-${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
+          model: ctx.currentModel,
+          cwd: ctx.cwd,
+          claudeMd: ctx.claudeMd,
+          claudeMdPath: ctx.claudeMdPath,
+          streaming: {
+            onText: (chunk) => {
+              if (!currentBubble) currentBubble = addAgentBubble();
+              currentText += chunk;
+              currentBubble.md.content = currentText;
+              bubbleHasContent = true;
+            },
+            onToolUse: (name, inp, id) => {
+              stopSpinner();
+              if (bubbleHasContent) {
+                currentBubble!.md.streaming = false;
+              } else if (currentBubble) {
+                chat.remove(currentBubble.row.id);
+                currentBubble = null;
+              }
+              const resultText = addToolCall(name, inp as Record<string, unknown>);
+              pendingTools.set(id, resultText);
+            },
+            onToolResult: (_name, res, id) => {
+              const pt = pendingTools.get(id);
+              if (pt) { fillToolResult(pt, res); pendingTools.delete(id); }
+              if (bubbleHasContent && currentBubble) {
+                currentBubble.md.streaming = false;
+                currentBubble = null;
+                currentText = "";
+                bubbleHasContent = false;
+              }
+              if (!currentBubble) currentBubble = addAgentBubble();
+              startSpinner(currentBubble.label);
+            },
+            onCompact: () => addLine("  ↻ context compacted"),
+            onRateLimit: updateRateLimit,
+            signal: agentAbort.signal,
+          },
+        }
+      );
 
       if (currentBubble) {
         currentBubble.md.streaming = false;
         if (!bubbleHasContent) chat.remove(currentBubble.row.id);
       }
       lastAgentText = result.text;
-      history = result.history;
-      readFiles = result.readFiles;
-      if (sessionId != null) addTokens(sessionId, result.inputTokens, result.outputTokens);
+
+      // Update session state if newly created
+      if (sessionId == null) {
+        sessionId = result.sessionId;
+        session = getSession(sessionId);
+        ctx.onSessionIdChanged(sessionId);
+        headerSessionText.content = `#${sessionId}  ·  ${session?.name ?? ""}`;
+      }
 
       const t = result.inputTokens, o = result.outputTokens;
       addLine(`  ${result.turns} turn${result.turns !== 1 ? "s" : ""}  ·  ${(t / 1000).toFixed(1)}k↑  ${o}↓`);
@@ -586,6 +536,5 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
     renderer._internalKeyInput.offInternal("keypress", clipboardHandler);
     renderer._internalKeyInput.offInternal("keypress", escHandler);
     renderer.useMouse = true;
-    flushAndCleanup();
   };
 }

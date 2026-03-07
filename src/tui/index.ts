@@ -11,6 +11,8 @@ import { checkForUpdates, getUpdateNotice } from "../updater.ts";
 import { mountSessionScreen } from "./session-screen.ts";
 import { mountModelScreen } from "./model-screen.ts";
 import { mountChatScreen } from "./chat-screen.ts";
+import { GatewayRouter } from "../gateway/router.ts";
+import { LocalGateway } from "../gateway/local.ts";
 import type Anthropic from "@anthropic-ai/sdk";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
@@ -24,6 +26,10 @@ export interface AppOptions {
 
 export async function runApp(opts: AppOptions): Promise<void> {
   let currentModel = opts.model;
+
+  // Create gateway router for TUI (local source — no network gateway needed)
+  const router = new GatewayRouter(opts.client);
+  router.register(new LocalGateway());
 
   // Register Task tool executor (runs subagents) — reads currentModel at call time
   setTaskExecutor(async (input, cwd) => {
@@ -100,7 +106,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
     if (initialSessionId != null) lastChatSessionId = initialSessionId;
     screenCleanup = mountChatScreen({
       renderer,
-      client: opts.client,
+      router,
       currentModel,
       cwd: opts.cwd,
       claudeMd,
@@ -125,5 +131,5 @@ export async function runApp(opts: AppOptions): Promise<void> {
   await new Promise<void>((resolve) => {
     (renderer as import("events").EventEmitter).on("destroy", resolve);
   });
-  screenCleanup?.();
+  (screenCleanup as (() => void) | null)?.();
 }

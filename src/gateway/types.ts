@@ -1,15 +1,14 @@
-// Gateway interface — every channel (Telegram, WhatsApp, HTTP) implements this.
+// Gateway interface — every channel (Telegram, WhatsApp, HTTP, local TUI) implements this.
 
-export type GatewaySource = "telegram" | "whatsapp" | "http";
+import type { RateLimitInfo } from "../agent.ts";
+
+export type GatewaySource = "local" | "telegram" | "whatsapp" | "http";
 
 export interface IncomingMessage {
-  /** Which gateway delivered this message */
   source: GatewaySource;
-  /** Unique identifier within the source (chat_id, phone number, etc.) */
+  /** Unique identifier within the source (chat_id, phone number, "local", etc.) */
   externalId: string;
-  /** Display name of the sender (optional) */
   senderName?: string;
-  /** The text content */
   text: string;
 }
 
@@ -19,12 +18,43 @@ export interface OutgoingMessage {
   text: string;
 }
 
+/** Streaming callbacks — used by the TUI for live rendering. Async gateways leave these empty. */
+export interface StreamingCallbacks {
+  onText?: (chunk: string) => void;
+  onToolUse?: (name: string, input: unknown, id: string) => void;
+  onToolResult?: (name: string, result: string, id: string) => void;
+  onCompact?: (summary: string) => void;
+  onRateLimit?: (info: RateLimitInfo) => void;
+  signal?: AbortSignal;
+}
+
+export interface DispatchOptions {
+  /** Explicit session ID to use. null = create new session. undefined = look up by externalId. */
+  sessionId?: number | null;
+  /** Name for a newly-created session (when sessionId is null) */
+  newSessionName?: string;
+  /** Model override */
+  model?: string;
+  /** Working directory for tools */
+  cwd?: string;
+  /** CLAUDE.md content */
+  claudeMd?: string;
+  claudeMdPath?: string;
+  /** Streaming callbacks for interactive (TUI) use */
+  streaming?: StreamingCallbacks;
+}
+
+export interface DispatchResult {
+  sessionId: number;
+  text: string;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface Gateway {
   readonly source: GatewaySource;
-  /** Start listening for messages. Call onMessage for each one received. */
   start(onMessage: (msg: IncomingMessage) => Promise<void>): Promise<void>;
-  /** Send a message back to a user */
   send(msg: OutgoingMessage): Promise<void>;
-  /** Graceful shutdown */
   stop(): Promise<void>;
 }
