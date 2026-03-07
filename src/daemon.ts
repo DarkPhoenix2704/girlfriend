@@ -6,17 +6,17 @@ import Anthropic from "@anthropic-ai/sdk";
 import { writeFileSync, readFileSync, existsSync, unlinkSync, mkdirSync } from "fs";
 import { join } from "path";
 import { startScheduler, stopScheduler } from "./scheduler.ts";
-import { setTaskExecutor } from "./tools.ts";
+import { setTaskExecutor, setActiveRouter } from "./tools.ts";
 import { createTaskExecutor } from "./subagent.ts";
 import { listCronJobs } from "./sessions.ts";
 import { enableDaemonLog, log } from "./daemon-log.ts";
 import { GatewayRouter } from "./gateway/router.ts";
 import { TelegramGateway } from "./gateway/telegram.ts";
 import { WhatsAppGateway } from "./gateway/whatsapp.ts";
+import { initConfig, config } from "./config.ts";
 
 const DATA_DIR = join(process.env.HOME ?? ".", ".girlfriend");
 const PID_FILE = join(DATA_DIR, "daemon.pid");
-const MODEL = process.env.OPENCLAW_MODEL ?? "claude-sonnet-4-6";
 
 // ─── PID file management ──────────────────────────────────────────────────────
 
@@ -56,8 +56,10 @@ export async function startDaemon(): Promise<void> {
   }
 
   enableDaemonLog();
+  initConfig();
   writePid();
 
+  const MODEL = process.env.OPENCLAW_MODEL ?? config().model.default;
   log("info", "daemon starting", { pid: process.pid, model: MODEL });
 
   const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -75,12 +77,13 @@ export async function startDaemon(): Promise<void> {
     return { content: result };
   });
 
-  // Start gateways
+  // Start gateways (env var takes precedence over config)
+  const cfg = config();
   const router = new GatewayRouter(client);
-  if (process.env.TELEGRAM_BOT_TOKEN) router.register(new TelegramGateway());
-  if (process.env.WHATSAPP_ALLOWED_NUMBERS !== undefined || process.env.WHATSAPP_ENABLED === "1")
-    router.register(new WhatsAppGateway());
+  if (process.env.TELEGRAM_BOT_TOKEN && cfg.telegram.enabled) router.register(new TelegramGateway());
+  if (cfg.whatsapp.enabled || process.env.WHATSAPP_ENABLED === "1") router.register(new WhatsAppGateway());
   await router.start();
+  setActiveRouter(router);
 
   // Graceful shutdown
   let shuttingDown = false;

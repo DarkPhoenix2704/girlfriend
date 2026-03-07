@@ -4,7 +4,7 @@ import {
   createCliRenderer,
 } from "@opentui/core";
 import type { KeyEvent } from "@opentui/core";
-import { setTaskExecutor } from "../tools.ts";
+import { setTaskExecutor, setActiveRouter } from "../tools.ts";
 import { createTaskExecutor } from "../subagent.ts";
 import { getSession } from "../sessions.ts";
 import { checkForUpdates, getUpdateNotice } from "../updater.ts";
@@ -30,6 +30,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
   // Create gateway router for TUI (local source — no network gateway needed)
   const router = new GatewayRouter(opts.client);
   router.register(new LocalGateway());
+  setActiveRouter(router);
 
   // Register Task tool executor (runs subagents) — reads currentModel at call time
   setTaskExecutor(async (input, cwd) => {

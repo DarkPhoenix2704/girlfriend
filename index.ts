@@ -1,8 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { runApp } from "./src/tui.ts";
-import { createSession, listSessions, getSession, deleteSession, formatAge } from "./src/sessions.ts";
+import { createSession, listSessions, getSession, deleteSession, formatAge, listCronJobs, listMemories } from "./src/sessions.ts";
 import {
-  startDaemon, stopDaemon, daemonStatus,
+  startDaemon, stopDaemon, daemonStatus, isDaemonRunning, readPid,
   printLaunchdPlist, printSystemdUnit,
 } from "./src/daemon.ts";
 
@@ -22,6 +22,39 @@ const red  = (s: string) => `\x1b[31m${s}\x1b[0m`;
 
 // ─── CLI args ──────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
+
+// ─── Status ────────────────────────────────────────────────────────────────────
+if (args.includes("--status")) {
+  const running = isDaemonRunning();
+  const pid = readPid();
+  const sessions = listSessions(9999);
+  const crons = listCronJobs();
+  const memories = listMemories({});
+
+  console.log(bold("\n  girlfriend status\n"));
+  console.log(`  daemon      ${running ? `running  (pid ${pid})` : dim("not running")}`);
+  console.log(`  sessions    ${sessions.length}`);
+  console.log(`  cron jobs   ${crons.length} (${crons.filter(j => j.enabled).length} enabled)`);
+  console.log(`  memories    ${memories.length} facts`);
+
+  if (crons.length > 0) {
+    console.log(bold("\n  scheduled jobs\n"));
+    for (const j of crons) {
+      const status = j.enabled ? "" : dim(" [disabled]");
+      const next = j.next_run ? `  next ${dim(j.next_run.slice(0, 16))}` : "";
+      console.log(`  ${bold(j.name.padEnd(20))} ${j.cron_expr.padEnd(15)}${next}${status}`);
+    }
+  }
+
+  if (sessions.length > 0) {
+    console.log(bold("\n  recent sessions\n"));
+    for (const s of sessions.slice(0, 5)) {
+      console.log(`  ${bold(String(s.id).padStart(3))}  ${s.name.padEnd(32)}${dim(`${formatAge(s.updated_at).padEnd(12)} ${s.message_count} msgs`)}`);
+    }
+  }
+  console.log();
+  process.exit(0);
+}
 
 // ─── Daemon subcommands ────────────────────────────────────────────────────────
 const daemonIdx = args.indexOf("--daemon");

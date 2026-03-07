@@ -13,7 +13,7 @@ import { compact } from "../compaction.ts";
 import { buildSystemPrompt } from "../prompts.ts";
 import { TOOL_SCHEMAS, setActiveSession } from "../tools.ts";
 import { log } from "../daemon-log.ts";
-import type { IncomingMessage, Gateway, DispatchOptions, DispatchResult } from "./types.ts";
+import type { IncomingMessage, OutgoingMessage, Gateway, DispatchOptions, DispatchResult } from "./types.ts";
 
 const DEFAULT_MODEL = process.env.GIRLFRIEND_MODEL ?? "claude-sonnet-4-6";
 
@@ -167,6 +167,13 @@ export class GatewayRouter {
         setActiveSession(null);
       }
     });
+  }
+
+  /** Send a message directly through a registered gateway (for proactive notifications). */
+  async sendDirect(msg: OutgoingMessage): Promise<void> {
+    const gw = this.gateways.get(msg.source);
+    if (!gw) throw new Error(`no gateway registered for source: ${msg.source}`);
+    await gw.send(msg);
   }
 
   /** Force-compact the history for a given session (used by /compact TUI command). */

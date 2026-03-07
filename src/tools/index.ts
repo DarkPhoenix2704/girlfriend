@@ -32,6 +32,12 @@ export function setTaskExecutor(fn: NonNullable<ToolContext["taskExecutor"]>) {
 let _activeSessionId: number | null = null;
 export function setActiveSession(id: number | null) { _activeSessionId = id; }
 
+// Active gateway router — set at daemon/TUI startup for the notify tool
+import type { GatewayRouter } from "../gateway/router.ts";
+let _activeRouter: GatewayRouter | null = null;
+export function setActiveRouter(router: GatewayRouter | null) { _activeRouter = router; }
+export function getActiveRouter(): GatewayRouter | null { return _activeRouter; }
+
 export async function executeTool(
   name: string,
   input: unknown,
