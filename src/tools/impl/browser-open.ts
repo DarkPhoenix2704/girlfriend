@@ -1,16 +1,18 @@
-import { getPage, extractPageText } from "../../browser.ts";
+import { getPage, getAriaSnapshot } from "../../browser.ts";
 import type { ToolDefinition } from "../types.ts";
 
 export const definition: ToolDefinition = {
   schema: {
     name: "BrowserOpen",
-    description: "Navigate to a URL in the browser and return the page title and readable text content. Use this to read web pages, articles, docs, or any URL.",
+    description: `Navigate to a URL and return the page as a YAML accessibility snapshot.
+The snapshot is a structured, token-efficient representation of the page — headings, links, buttons, inputs, text — without images.
+Use BrowserClick / BrowserFill to interact, BrowserScreenshot only when you truly need to see visuals.`,
     input_schema: {
       type: "object",
       properties: {
         url: { type: "string", description: "Full URL to navigate to (must include https://)" },
-        max_chars: { type: "number", description: "Max characters of page text to return (default 6000)" },
         wait_ms: { type: "number", description: "Extra ms to wait after load for dynamic content (default 0)" },
+        max_chars: { type: "number", description: "Max characters of snapshot to return (default 12000)" },
       },
       required: ["url"],
     },
@@ -18,16 +20,16 @@ export const definition: ToolDefinition = {
 
   async execute(input) {
     const url = input.url as string;
-    const maxChars = (input.max_chars as number | undefined) ?? 6000;
     const waitMs = (input.wait_ms as number | undefined) ?? 0;
+    const maxChars = (input.max_chars as number | undefined) ?? 12_000;
 
     const page = await getPage();
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
     if (waitMs > 0) await page.waitForTimeout(waitMs);
 
     const title = await page.title();
-    const text = await extractPageText(page, maxChars);
+    const snapshot = await getAriaSnapshot(page, maxChars);
 
-    return { content: `# ${title}\nURL: ${page.url()}\n\n${text}` };
+    return { content: `# ${title}\nURL: ${page.url()}\n\n${snapshot}` };
   },
 };

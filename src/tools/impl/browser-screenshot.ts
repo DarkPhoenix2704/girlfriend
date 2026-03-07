@@ -4,7 +4,7 @@ import type { ToolDefinition } from "../types.ts";
 export const definition: ToolDefinition = {
   schema: {
     name: "BrowserScreenshot",
-    description: "Capture a screenshot of the current browser page. Returns base64-encoded PNG for vision analysis.",
+    description: "Capture a screenshot of the current browser page as base64 PNG. Use this ONLY when you need to visually inspect layout, images, or charts — BrowserOpen's YAML snapshot is preferred for reading content as it uses far fewer tokens.",
     input_schema: {
       type: "object",
       properties: {

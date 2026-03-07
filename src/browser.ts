@@ -54,12 +54,12 @@ export async function resetPage(): Promise<void> {
   }
 }
 
-/** Extract readable text from the current page (strips scripts/styles). */
-export async function extractPageText(page: Page, maxChars = 8000): Promise<string> {
-  const text = await page.evaluate(() => {
-    // Remove noisy elements
-    document.querySelectorAll("script,style,noscript,svg,nav,footer,header").forEach((el) => el.remove());
-    return (document.body?.innerText ?? "").replace(/\s{3,}/g, "\n\n").trim();
-  });
-  return text.slice(0, maxChars);
+/**
+ * Returns the page as a YAML accessibility snapshot (aria snapshot).
+ * This is the Playwright MCP approach — structured, no images, very token-efficient.
+ * Playwright 1.48+ supports page.locator("body").ariaSnapshot() natively.
+ */
+export async function getAriaSnapshot(page: Page, maxChars = 12_000): Promise<string> {
+  const yaml = await page.locator("body").ariaSnapshot();
+  return yaml.slice(0, maxChars);
 }
