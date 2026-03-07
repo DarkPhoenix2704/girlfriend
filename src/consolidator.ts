@@ -2,7 +2,7 @@
 // Call consolidate() from a nightly cron or on-demand.
 
 import Anthropic from "@anthropic-ai/sdk";
-import { getRecentMessages, upsertMemory, memoryGet, memorySet, logEvent } from "./sessions.ts";
+import { getRecentMessages, upsertMemory, memoryGet, memorySet, logEvent, pruneMemories } from "./sessions.ts";
 
 const LAST_RUN_KEY = "consolidator.last_run";
 const BATCH_CHARS = 40_000; // max chars fed to Haiku per run
@@ -106,10 +106,13 @@ export async function consolidate(
 
   memorySet(LAST_RUN_KEY, new Date().toISOString());
 
+  // Prune stale low-confidence memories
+  const pruned = pruneMemories();
+
   logEvent("tool_call", {
     sessionId: options.sessionId,
     name: "consolidator",
-    output: `Extracted ${facts.length} facts from ${rawMessages.length} messages`,
+    output: `Extracted ${facts.length} facts from ${rawMessages.length} messages; pruned ${pruned} stale memories`,
   });
 
   return { factsUpserted: facts.length, messagesScanned: rawMessages.length };

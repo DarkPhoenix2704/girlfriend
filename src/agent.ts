@@ -2,7 +2,8 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { buildSystemPrompt } from "./prompts.ts";
-import { TOOL_SCHEMAS, executeTool, CONCURRENT_SAFE_TOOLS, setActiveSession } from "./tools.ts";
+import { TOOL_SCHEMAS, executeTool, CONCURRENT_SAFE_TOOLS } from "./tools.ts";
+import type { SubagentCallbacks } from "./tools/types.ts";
 import { maybeCompact, compact } from "./compaction.ts";
 import { withRetry } from "./retry.ts";
 import { logEvent } from "./sessions.ts";
@@ -46,6 +47,8 @@ export interface AgentOptions {
   signal?: AbortSignal;
   /** Session ID for event logging */
   sessionId?: number | null;
+  /** AskUser callback — wires up the AskUserQuestion tool for interactive sessions. */
+  askUser?: (question: string, options?: string[]) => Promise<string>;
 }
 
 export interface RateLimitInfo {
@@ -99,7 +102,14 @@ export async function runAgent(
   const shell = options.shell ?? (process.env.SHELL || "bash");
   const maxTurns = options.maxTurns ?? 0;
 
-  setActiveSession(options.sessionId ?? null);
+  const sessionId = options.sessionId ?? null;
+  const askUser = options.askUser;
+
+  // Per-call context passed into executeTool — no module-level globals needed
+  const subagentCallbacks: SubagentCallbacks = {
+    onToolUse: options.onToolUse,
+    onToolResult: options.onToolResult,
+  };
 
   const toolNames = options.tools ?? TOOL_SCHEMAS.map((t) => t.name);
   const activeTools = TOOL_SCHEMAS.filter((t) => toolNames.includes(t.name));
@@ -259,8 +269,11 @@ export async function runAgent(
     const concurrentResults = await Promise.all(
       concurrent.map(async (block) => {
         options.onToolUse?.(block.name, block.input, block.id);
-        const result = await executeTool(block.name, block.input, readFiles, cwd);
+        const result = await executeTool(block.name, block.input, readFiles, cwd, subagentCallbacks, sessionId, askUser);
         options.onToolResult?.(block.name, result.content, block.id);
+        // Accumulate subagent tokens (Task tool carries them in the result)
+        totalInputTokens += result.inputTokens ?? 0;
+        totalOutputTokens += result.outputTokens ?? 0;
         return {
           type: "tool_result" as const,
           tool_use_id: block.id,
@@ -273,8 +286,10 @@ export async function runAgent(
 
     for (const block of sequential) {
       options.onToolUse?.(block.name, block.input, block.id);
-      const result = await executeTool(block.name, block.input, readFiles, cwd);
+      const result = await executeTool(block.name, block.input, readFiles, cwd, subagentCallbacks, sessionId, askUser);
       options.onToolResult?.(block.name, result.content, block.id);
+      totalInputTokens += result.inputTokens ?? 0;
+      totalOutputTokens += result.outputTokens ?? 0;
       toolResults.push({
         type: "tool_result" as const,
         tool_use_id: block.id,

@@ -13,7 +13,7 @@ import { GatewayRouter } from "./gateway/router.ts";
 import { TelegramGateway } from "./gateway/telegram.ts";
 import { WhatsAppGateway } from "./gateway/whatsapp.ts";
 import { HttpServer } from "./gateway/http.ts";
-import { initConfig, config } from "./config.ts";
+import { initConfig, config, watchConfig } from "./config.ts";
 import { writePid, clearPid, readPid, isDaemonRunning } from "./pid.ts";
 
 export { readPid, isDaemonRunning } from "./pid.ts";
@@ -42,13 +42,13 @@ export async function startDaemon(): Promise<void> {
     : new Anthropic();
 
   // Register task executor for subagents
-  setTaskExecutor(async (input, cwd) => {
+  setTaskExecutor(async (input, cwd, callbacks, sessionId) => {
     const executor = createTaskExecutor(
       { Explore: { description: "Codebase exploration", prompt: "", tools: ["Read", "Glob", "Grep", "WebFetch"] } },
-      { client, parentModel: MODEL, cwd }
+      { client, parentModel: MODEL, cwd, sessionId },
+      callbacks,
     );
-    const result = await executor(input);
-    return { content: result };
+    return executor(input);
   });
 
   // Start gateways (env var takes precedence over config)
@@ -66,12 +66,18 @@ export async function startDaemon(): Promise<void> {
     : null;
   httpServer?.start();
 
+  // Hot-reload config.toml — currently logs the reload; future: re-register gateways
+  const stopConfigWatch = watchConfig((newCfg) => {
+    log("info", "config.toml reloaded", { model: newCfg.model.default });
+  });
+
   // Graceful shutdown
   let shuttingDown = false;
   async function shutdown(signal: string) {
     if (shuttingDown) return;
     shuttingDown = true;
     log("info", `received ${signal}, shutting down`);
+    stopConfigWatch();
     stopScheduler();
     httpServer?.stop();
     await router.stop();
@@ -133,7 +139,7 @@ export function printLaunchdPlist(): void {
   <key>EnvironmentVariables</key>
   <dict>
     <key>ANTHROPIC_API_KEY</key>
-    <string>${process.env.ANTHROPIC_API_KEY ?? "YOUR_KEY_HERE"}</string>
+    <string>YOUR_ANTHROPIC_API_KEY_HERE</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -160,7 +166,7 @@ Type=simple
 ExecStart=${bunPath} ${indexPath} --daemon start
 Restart=always
 RestartSec=10
-Environment=ANTHROPIC_API_KEY=${process.env.ANTHROPIC_API_KEY ?? "YOUR_KEY_HERE"}
+Environment=ANTHROPIC_API_KEY=YOUR_ANTHROPIC_API_KEY_HERE
 WorkingDirectory=${process.cwd()}
 
 [Install]

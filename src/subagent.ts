@@ -4,6 +4,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { SUBAGENT_SYSTEM_PROMPT, buildSubagentNotes } from "./prompts.ts";
 import { TOOL_SCHEMAS, executeTool, CONCURRENT_SAFE_TOOLS } from "./tools.ts";
+import type { SubagentCallbacks } from "./tools/types.ts";
 import { withRetry } from "./retry.ts";
 
 export interface SubagentDefinition {
@@ -18,7 +19,11 @@ export interface SubagentRunOptions {
   parentModel: string;
   cwd: string;
   depth?: number; // recursion depth — subagents cannot spawn subagents (depth > 0 → no Task tool)
+  callbacks?: SubagentCallbacks;
+  sessionId?: number | null; // parent session — used for event logging, no separate subagent session
 }
+
+const MAX_SUBAGENT_DEPTH = 1;
 
 const MODEL_MAP: Record<string, string> = {
   sonnet: "claude-sonnet-4-6",
@@ -34,12 +39,21 @@ const MODEL_MAP: Record<string, string> = {
  * - Tool set is restricted to definition.tools
  * - depth > 0 prevents spawning nested subagents (no Task tool)
  */
+export interface SubagentResult {
+  text: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export async function runSubagent(
   taskPrompt: string,
   definition: SubagentDefinition,
   options: SubagentRunOptions
-): Promise<string> {
+): Promise<SubagentResult> {
   const depth = options.depth ?? 0;
+  if (depth > MAX_SUBAGENT_DEPTH) {
+    return { text: "<tool_use_error>Maximum subagent nesting depth reached.</tool_use_error>", inputTokens: 0, outputTokens: 0 };
+  }
   const client = options.client;
 
   // Model resolution — "inherit" keeps parent model
@@ -69,6 +83,8 @@ export async function runSubagent(
 
   const readFiles = new Set<string>();
   let result = "";
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   for (let turn = 0; turn < 50; turn++) {
     const cachedTools = activeTools.length > 0
@@ -94,10 +110,16 @@ export async function runSubagent(
       (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
     );
 
+    totalInputTokens += response.usage.input_tokens;
+    totalOutputTokens += response.usage.output_tokens;
+
     result = textBlocks.map((b) => b.text).join("");
     messages.push({ role: "assistant", content: response.content });
 
     if (toolUseBlocks.length === 0) break;
+
+    // Emit subagent tool events so TUI can show live progress
+    const cbs = options.callbacks;
 
     // Execute tools (same concurrency split as main agent)
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
@@ -107,21 +129,25 @@ export async function runSubagent(
 
     const concurrentResults = await Promise.all(
       concurrent.map(async (block) => {
-        const res = await executeTool(block.name, block.input, readFiles, options.cwd);
+        cbs?.onToolUse?.(block.name, block.input, `sub:${block.id}`);
+        const res = await executeTool(block.name, block.input, readFiles, options.cwd, undefined, options.sessionId);
+        cbs?.onToolResult?.(block.name, res.content, `sub:${block.id}`);
         return { type: "tool_result" as const, tool_use_id: block.id, content: res.content, is_error: res.is_error };
       })
     );
     toolResults.push(...concurrentResults);
 
     for (const block of sequential) {
+      cbs?.onToolUse?.(block.name, block.input, `sub:${block.id}`);
       const res = await executeTool(block.name, block.input, readFiles, options.cwd);
+      cbs?.onToolResult?.(block.name, res.content, `sub:${block.id}`);
       toolResults.push({ type: "tool_result" as const, tool_use_id: block.id, content: res.content, is_error: res.is_error });
     }
 
     messages.push({ role: "user", content: toolResults });
   }
 
-  return result;
+  return { text: result, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
 }
 
 /**
@@ -130,9 +156,10 @@ export async function runSubagent(
  */
 export function createTaskExecutor(
   agents: Record<string, SubagentDefinition>,
-  options: Omit<SubagentRunOptions, "depth">
+  options: Omit<SubagentRunOptions, "depth">,
+  callbacks?: SubagentCallbacks,
 ) {
-  return async (input: unknown): Promise<string> => {
+  return async (input: unknown): Promise<import("./tools/types.ts").ToolResult> => {
     const { description, prompt, subagent_type } = input as {
       description: string;
       prompt: string;
@@ -148,10 +175,14 @@ export function createTaskExecutor(
     };
 
     try {
-      const result = await runSubagent(prompt, definition, { ...options, depth: 1 });
-      return result || "(subagent completed with no output)";
+      const r = await runSubagent(prompt, definition, { ...options, depth: 1, callbacks });
+      return {
+        content: r.text || "(subagent completed with no output)",
+        inputTokens: r.inputTokens,
+        outputTokens: r.outputTokens,
+      };
     } catch (err) {
-      return `Subagent error: ${err instanceof Error ? err.message : String(err)}`;
+      return { content: `Subagent error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
     }
   };
 }

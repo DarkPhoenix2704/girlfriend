@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { runApp } from "./src/tui.ts";
-import { createSession, listSessions, getSession, deleteSession, formatAge, listCronJobs, listMemories } from "./src/sessions.ts";
+import { createSession, listSessions, getSession, deleteSession, formatAge, listCronJobs, listMemories, getTokenStats } from "./src/sessions.ts";
 import {
   startDaemon, stopDaemon, daemonStatus,
   printLaunchdPlist, printSystemdUnit,
@@ -31,12 +31,16 @@ if (args.includes("--status")) {
   const sessions = listSessions(9999);
   const crons = listCronJobs();
   const memories = listMemories({});
+  const tokens = getTokenStats();
+
+  const fmtK = (n: number) => n >= 1_000_000 ? `${(n/1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n/1_000).toFixed(1)}k` : String(n);
 
   console.log(bold("\n  girlfriend status\n"));
   console.log(`  daemon      ${running ? `running  (pid ${pid})` : dim("not running")}`);
   console.log(`  sessions    ${sessions.length}`);
   console.log(`  cron jobs   ${crons.length} (${crons.filter(j => j.enabled).length} enabled)`);
   console.log(`  memories    ${memories.length} facts`);
+  console.log(`  tokens      today ${fmtK(tokens.today)}  ·  7d ${fmtK(tokens.thisWeek)}  ·  total ${fmtK(tokens.total)}`);
 
   if (crons.length > 0) {
     console.log(bold("\n  scheduled jobs\n"));

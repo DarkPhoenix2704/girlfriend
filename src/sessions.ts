@@ -502,7 +502,8 @@ export function searchMemories(
   const params: (string | number)[] = [];
 
   if (query.trim()) {
-    // FTS5 search
+    // FTS5 phrase search — wrap in quotes to safely handle arbitrary input text
+    const ftsQuery = '"' + query.replace(/"/g, " ") + '"';
     const rows = db().prepare(`
       SELECT m.* FROM memories m
       JOIN memories_fts fts ON fts.rowid = m.id
@@ -512,7 +513,7 @@ export function searchMemories(
       ORDER BY rank
       LIMIT ?
     `).all(
-      query,
+      ftsQuery,
       ...(options.category ? [options.category] : []),
       ...(options.namespace !== undefined ? [options.namespace] : []),
       options.limit ?? 20,
@@ -534,6 +535,33 @@ export function deleteMemory(key: string, namespace?: string): boolean {
     "DELETE FROM memories WHERE key = ? AND COALESCE(namespace, '') = COALESCE(?, '')"
   ).run(key, namespace ?? null);
   return result.changes > 0;
+}
+
+/** Delete low-confidence memories older than N days (default: confidence < 0.6 AND older than 90 days). */
+export function pruneMemories(options: { olderThanDays?: number; maxConfidence?: number } = {}): number {
+  const days = options.olderThanDays ?? 90;
+  const maxConf = options.maxConfidence ?? 0.6;
+  const result = db().prepare(`
+    DELETE FROM memories
+    WHERE confidence < ?
+    AND updated_at < datetime('now', '-' || ? || ' days')
+  `).run(maxConf, days);
+  return result.changes;
+}
+
+export interface TokenStats {
+  today: number;
+  thisWeek: number;
+  total: number;
+}
+
+export function getTokenStats(): TokenStats {
+  const q = (sql: string) => (db().prepare(sql).get() as { n: number }).n;
+  return {
+    today:    q("SELECT COALESCE(SUM(total_input_tokens+total_output_tokens),0) AS n FROM sessions WHERE date(updated_at)=date('now')"),
+    thisWeek: q("SELECT COALESCE(SUM(total_input_tokens+total_output_tokens),0) AS n FROM sessions WHERE updated_at>=datetime('now','-7 days')"),
+    total:    q("SELECT COALESCE(SUM(total_input_tokens+total_output_tokens),0) AS n FROM sessions"),
+  };
 }
 
 export function listMemories(options: { category?: string; namespace?: string; limit?: number } = {}): MemoryFact[] {
@@ -589,6 +617,8 @@ export function searchMessages(
 
   const extra = extraConditions.length ? `AND ${extraConditions.join(" AND ")}` : "";
 
+  // Wrap in FTS5 phrase quotes to safely handle arbitrary input (same as searchMemories)
+  const ftsQuery = '"' + query.replace(/"/g, " ") + '"';
   return db().prepare(`
     SELECT
       m.id        AS message_id,
@@ -604,7 +634,7 @@ export function searchMessages(
     WHERE messages_fts MATCH ? ${extra}
     ORDER BY rank
     LIMIT ?
-  `).all(query, ...extraParams, options.limit ?? 20) as MessageSearchResult[];
+  `).all(ftsQuery, ...extraParams, options.limit ?? 20) as MessageSearchResult[];
 }
 
 // ─── Events ───────────────────────────────────────────────────────────────────
@@ -674,12 +704,13 @@ export function getCronJob(name: string): CronJob | null {
   return db().prepare("SELECT * FROM cron_jobs WHERE name = ?").get(name) as CronJob | null;
 }
 
+const ALLOWED_CRON_FIELDS = new Set(["cron_expr", "prompt", "last_run", "next_run", "enabled"]);
+
 export function updateCronJob(name: string, updates: Partial<Pick<CronJob, "cron_expr" | "prompt" | "last_run" | "next_run" | "enabled">>): void {
-  const fields = Object.entries(updates)
-    .map(([k]) => `${k} = ?`)
-    .join(", ");
-  const values = Object.values(updates);
-  if (!fields) return;
+  const entries = Object.entries(updates).filter(([k]) => ALLOWED_CRON_FIELDS.has(k));
+  if (entries.length === 0) return;
+  const fields = entries.map(([k]) => `${k} = ?`).join(", ");
+  const values = entries.map(([, v]) => v);
   db().prepare(`UPDATE cron_jobs SET ${fields} WHERE name = ?`).run(...values, name);
 }
 

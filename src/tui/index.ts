@@ -11,6 +11,7 @@ import { checkForUpdates, getUpdateNotice } from "../updater.ts";
 import { mountSessionScreen } from "./session-screen.ts";
 import { mountModelScreen } from "./model-screen.ts";
 import { mountChatScreen } from "./chat-screen.ts";
+import { mountMemoryScreen } from "./memory-screen.ts";
 import { GatewayRouter } from "../gateway/router.ts";
 import { LocalGateway } from "../gateway/local.ts";
 import { HttpClient } from "../gateway/http-client.ts";
@@ -45,14 +46,14 @@ export async function runApp(opts: AppOptions): Promise<void> {
       })()
     : null;
 
-  // Register Task tool executor (runs subagents) — reads currentModel at call time
-  setTaskExecutor(async (input, cwd) => {
+  // Register Task tool executor — reads currentModel, callbacks, and sessionId at call time
+  setTaskExecutor(async (input, cwd, callbacks, sessionId) => {
     const executor = createTaskExecutor(
       { Explore: { description: "Codebase exploration", prompt: "", tools: ["Read", "Glob", "Grep", "WebFetch"] } },
-      { client: opts.client, parentModel: currentModel, cwd }
+      { client: opts.client, parentModel: currentModel, cwd, sessionId },
+      callbacks,
     );
-    const result = await executor(input);
-    return { content: result };
+    return executor(input);
   });
 
   // Check for updates in the background — never blocks startup
@@ -90,6 +91,14 @@ export async function runApp(opts: AppOptions): Promise<void> {
   });
 
   // ── Screen mount functions ──────────────────────────────────────────────────
+  function showMemoryScreen() {
+    clearRoot();
+    screenCleanup = mountMemoryScreen({
+      renderer,
+      onBack: () => showSessionScreen(),
+    });
+  }
+
   function showSessionScreen() {
     clearRoot();
     screenCleanup = mountSessionScreen({
@@ -98,6 +107,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
       lastChatSessionId,
       onOpenSession: (id) => showChatScreen(id),
       onNewSession: () => showChatScreen(null),
+      onMemoryScreen: () => showMemoryScreen(),
       onBack: () => showChatScreen(lastChatSessionId),
     });
   }
@@ -131,6 +141,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
       initialSessionId,
       onSessionListRequested: () => showSessionScreen(),
       onModelScreenRequested: () => showModelScreen(),
+      onMemoryScreenRequested: () => showMemoryScreen(),
       onNewChatRequested: () => showChatScreen(null),
       onSessionIdChanged: (id) => { lastChatSessionId = id; },
     });

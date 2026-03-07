@@ -1,4 +1,30 @@
+import { lookup } from "node:dns/promises";
+import ipaddr from "ipaddr.js";
 import type { ToolDefinition } from "../types.ts";
+
+/**
+ * SSRF guard using the same ipaddr.js logic as request-filtering-agent.
+ * DNS-resolves the hostname so loopback-domain tricks (e.g. 127.0.0.1.nip.io) are caught.
+ * Throws if the URL targets a private, reserved, or non-unicast address.
+ */
+async function assertSafeUrl(urlStr: string): Promise<void> {
+  let parsed: URL;
+  try { parsed = new URL(urlStr); } catch { throw new Error(`Invalid URL: ${urlStr}`); }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error(`Protocol not allowed: ${parsed.protocol}`);
+  }
+  const hostname = parsed.hostname;
+  const addresses = await lookup(hostname, { all: true }).catch((err) => {
+    throw new Error(`DNS lookup failed for ${hostname}: ${err instanceof Error ? err.message : err}`);
+  });
+  for (const { address } of addresses) {
+    const ip = ipaddr.parse(address);
+    const range = ip.range();
+    if (range !== "unicast") {
+      throw new Error(`Request blocked: ${hostname} resolves to ${address} (${range})`);
+    }
+  }
+}
 
 export const definition: ToolDefinition = {
   concurrent: true,
@@ -16,6 +42,12 @@ export const definition: ToolDefinition = {
 
   async execute(input) {
     const url = input.url as string;
+
+    try {
+      await assertSafeUrl(url);
+    } catch (err) {
+      return { content: `<tool_use_error>${err instanceof Error ? err.message : String(err)}</tool_use_error>`, is_error: true };
+    }
 
     const resp = await fetch(url, {
       headers: {

@@ -3,15 +3,15 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import {
-  getSessionByExternalId, createSession, getSession,
+  getSessionByExternalId, createSession, getSession, renameSession,
   loadMessages, loadReadFiles,
   appendMessages, saveCompactionMessages,
-  saveReadFiles, addTokens, logEvent, listMemories,
+  saveReadFiles, addTokens, logEvent, listMemories, searchMemories,
 } from "../sessions.ts";
 import { runAgent } from "../agent.ts";
 import { compact } from "../compaction.ts";
 import { buildSystemPrompt } from "../prompts.ts";
-import { TOOL_SCHEMAS, setActiveSession } from "../tools.ts";
+import { TOOL_SCHEMAS } from "../tools.ts";
 import { log } from "../daemon-log.ts";
 import type { IncomingMessage, OutgoingMessage, Gateway, DispatchOptions, DispatchResult } from "./types.ts";
 
@@ -23,20 +23,52 @@ const _locks = new Map<number, Promise<void>>();
 const LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 function withSessionLock<T>(sessionId: number, fn: () => Promise<T>): Promise<T> {
   const prev = _locks.get(sessionId) ?? Promise.resolve();
+  let timedOut = false;
   const prevWithTimeout = Promise.race([
     prev,
-    new Promise<void>((resolve) => setTimeout(resolve, LOCK_TIMEOUT_MS)),
+    new Promise<void>((resolve) => setTimeout(() => { timedOut = true; resolve(); }, LOCK_TIMEOUT_MS)),
   ]);
-  const next = prevWithTimeout.then(fn);
+  const next = prevWithTimeout.then(() => {
+    if (timedOut) {
+      log("warn", `session lock timeout for session ${sessionId} — previous run may still be active, forcing unlock`);
+    }
+    return fn();
+  });
   _locks.set(sessionId, next.then(() => {}).catch(() => {}));
   return next;
 }
 
-/** Collect up to 20 memory facts and format them as a bullet list. */
-function loadMemoriesString(): string {
-  const facts = listMemories({ limit: 20 });
+/** Return memories relevant to the current message, falling back to recent if no FTS match. */
+function loadMemoriesString(query: string): string {
+  let facts: import("../sessions.ts").MemoryFact[];
+  try {
+    facts = searchMemories(query, { limit: 10 });
+  } catch {
+    facts = [];
+  }
+  if (facts.length === 0) facts = listMemories({ limit: 10 });
   if (facts.length === 0) return "";
   return facts.map((f) => `- ${f.key}: ${f.value}`).join("\n");
+}
+
+/** Call Haiku to generate a short session name from the first exchange. Fire-and-forget. */
+async function autoNameSession(client: Anthropic, sessionId: number, userText: string, agentText: string): Promise<void> {
+  try {
+    const res = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 15,
+      messages: [{
+        role: "user",
+        content: `Title this conversation in 4-6 words. Reply with ONLY the title, no punctuation or quotes.\n\nUser: ${userText.slice(0, 300)}\nAssistant: ${agentText.slice(0, 300)}`,
+      }],
+    });
+    const name = res.content
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map((b) => b.text).join("").trim()
+      .replace(/^["'`]|["'`]$/g, "")
+      .slice(0, 60);
+    if (name) renameSession(sessionId, name);
+  } catch { /* non-fatal — keep the default name */ }
 }
 
 /** Wrap a gateway message callback with a 2-second batcher per externalId. */
@@ -173,11 +205,9 @@ export class GatewayRouter {
       const readFiles = loadReadFiles(sessionId);
       const savedLength = history.length;
 
-      setActiveSession(sessionId);
-
       try {
-        // Inject memories into system prompt for async gateway sessions (WhatsApp/Telegram/cron)
-        const memories = msg.source !== "local" ? loadMemoriesString() : undefined;
+        // Inject relevant memories for async gateway sessions (WhatsApp/Telegram/cron)
+        const memories = msg.source !== "local" ? loadMemoriesString(msg.text) : undefined;
 
         const result = await runAgent(msg.text, {
           client: this.client,
@@ -189,6 +219,7 @@ export class GatewayRouter {
           memories,
           history,
           readFiles,
+          askUser:      options.askUser,
           onText:       options.streaming?.onText,
           onToolUse:    options.streaming?.onToolUse,
           onToolResult: options.streaming?.onToolResult,
@@ -205,6 +236,11 @@ export class GatewayRouter {
         }
         saveReadFiles(sessionId, result.readFiles);
         addTokens(sessionId, result.inputTokens, result.outputTokens);
+
+        // Auto-name new sessions after first turn (fire and forget)
+        if (savedLength === 0 && result.text) {
+          autoNameSession(this.client, sessionId, msg.text, result.text).catch(() => {});
+        }
 
         // Send reply for async gateways (TUI uses streaming callbacks instead)
         if (!options.streaming?.onText) {
@@ -232,8 +268,6 @@ export class GatewayRouter {
           await gw?.send({ source: msg.source, externalId: msg.externalId, text: `Error: ${errMsg}` });
         }
         throw err;
-      } finally {
-        setActiveSession(null);
       }
     });
   }
@@ -268,7 +302,6 @@ export class GatewayRouter {
 
   /** Rename a session. */
   renameSession(sessionId: number, name: string): void {
-    const { renameSession } = require("../sessions.ts") as typeof import("../sessions.ts");
     renameSession(sessionId, name);
   }
 

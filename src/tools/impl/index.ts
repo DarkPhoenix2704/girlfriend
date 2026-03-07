@@ -24,6 +24,8 @@ export { definition as CronDelete } from "./cron-delete.ts";
 export { definition as CronUpdate } from "./cron-update.ts";
 // Phase 7 — notifications
 export { definition as Notify } from "./notify.ts";
+// Interactive
+export { definition as AskUserQuestion } from "./ask-user.ts";
 // Phase 4 — browser automation + web search
 export { definition as BrowserOpen }       from "./browser-open.ts";
 export { definition as BrowserClick }      from "./browser-click.ts";

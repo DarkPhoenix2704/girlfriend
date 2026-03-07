@@ -12,7 +12,25 @@ const ALLOWED_IDS: Set<number> = new Set(
 );
 
 function isAllowed(chatId: number): boolean {
-  return ALLOWED_IDS.size === 0 || ALLOWED_IDS.has(chatId);
+  if (ALLOWED_IDS.size === 0) {
+    log("warn", `Telegram message from ${chatId} accepted — set TELEGRAM_ALLOWED_IDS to restrict access`);
+    return true;
+  }
+  return ALLOWED_IDS.has(chatId);
+}
+
+// Per-chat rate limiting: 20 requests per minute
+const _telegramRateLimits = new Map<number, { count: number; resetAt: number }>();
+function isTelegramRateLimited(chatId: number): boolean {
+  const now = Date.now();
+  const entry = _telegramRateLimits.get(chatId);
+  if (!entry || now >= entry.resetAt) {
+    _telegramRateLimits.set(chatId, { count: 1, resetAt: now + 60_000 });
+    return false;
+  }
+  if (entry.count >= 20) return true;
+  entry.count++;
+  return false;
 }
 
 export class TelegramGateway implements Gateway {
@@ -61,6 +79,10 @@ export class TelegramGateway implements Gateway {
       const chatId = ctx.chat!.id;
       if (!isAllowed(chatId)) {
         await ctx.reply("Sorry, you're not authorised to use this bot.");
+        return;
+      }
+      if (isTelegramRateLimited(chatId)) {
+        await ctx.reply("Too many requests — please wait a minute before sending more messages.");
         return;
       }
 

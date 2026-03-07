@@ -1,6 +1,6 @@
 // WhatsApp gateway — uses Baileys (unofficial, QR-based auth).
 // Auth state persisted at ~/.girlfriend/whatsapp-auth/.
-// Set WHATSAPP_ALLOWED_NUMBERS (comma-separated) to restrict access.
+// Message filtering is configured in ~/.girlfriend/config.toml [whatsapp].
 
 import makeWASocket, {
   useMultiFileAuthState,
@@ -14,36 +14,40 @@ import { join } from "path";
 import qrcodeTerminal from "qrcode-terminal";
 import { log } from "../daemon-log.ts";
 import type { Gateway, IncomingMessage, OutgoingMessage } from "./types.ts";
+import { loadConfig } from "../config.ts";
 
 const AUTH_DIR = join(process.env.HOME ?? ".", ".girlfriend", "whatsapp-auth");
-const ALLOWED_NUMBERS: Set<string> = new Set(
-  (process.env.WHATSAPP_ALLOWED_NUMBERS ?? "")
-    .split(",").map(s => s.trim()).filter(Boolean)
-);
 
-function isAllowed(jid: string): boolean {
-  if (ALLOWED_NUMBERS.size === 0) return true;
-  const number = jid.split("@")[0] ?? "";
-  // Match against full JID or just the number prefix
-  return ALLOWED_NUMBERS.has(number) || ALLOWED_NUMBERS.has(jid);
+// Per-JID rate limiting: 20 requests per minute
+const _waRateLimits = new Map<string, { count: number; resetAt: number }>();
+function isWaRateLimited(jid: string): boolean {
+  const now = Date.now();
+  const entry = _waRateLimits.get(jid);
+  if (!entry || now >= entry.resetAt) {
+    _waRateLimits.set(jid, { count: 1, resetAt: now + 60_000 });
+    return false;
+  }
+  if (entry.count >= 20) return true;
+  entry.count++;
+  return false;
+}
+
+/** Normalise a Baileys JID to just the numeric part (strips :device and @domain). */
+function jidNumber(jid: string): string {
+  return jid.split(":")[0]!.split("@")[0]!;
 }
 
 /** Recursively unwrap ephemeral/viewOnce/document-with-caption wrappers. */
 function extractText(msg: proto.IMessage | null | undefined): string | null {
   if (!msg) return null;
 
-  // Plain text
   if (msg.conversation) return msg.conversation;
-
-  // Text with link preview
   if (msg.extendedTextMessage?.text) return msg.extendedTextMessage.text;
 
-  // Image / video / document captions
   if (msg.imageMessage?.caption)    return msg.imageMessage.caption;
   if (msg.videoMessage?.caption)    return msg.videoMessage.caption;
   if (msg.documentMessage?.caption) return msg.documentMessage.caption;
 
-  // Button / list responses
   if (msg.buttonsResponseMessage?.selectedDisplayText)
     return msg.buttonsResponseMessage.selectedDisplayText;
   if (msg.listResponseMessage?.title)
@@ -51,13 +55,9 @@ function extractText(msg: proto.IMessage | null | undefined): string | null {
   if (msg.templateButtonReplyMessage?.selectedDisplayText)
     return msg.templateButtonReplyMessage.selectedDisplayText;
 
-  // Disappearing / view-once wrappers — unwrap recursively
-  if (msg.ephemeralMessage?.message)
-    return extractText(msg.ephemeralMessage.message);
-  if (msg.viewOnceMessage?.message)
-    return extractText(msg.viewOnceMessage.message);
-  if (msg.viewOnceMessageV2?.message)
-    return extractText(msg.viewOnceMessageV2.message);
+  if (msg.ephemeralMessage?.message)  return extractText(msg.ephemeralMessage.message);
+  if (msg.viewOnceMessage?.message)   return extractText(msg.viewOnceMessage.message);
+  if (msg.viewOnceMessageV2?.message) return extractText(msg.viewOnceMessageV2.message);
 
   return null;
 }
@@ -74,17 +74,19 @@ export class WhatsAppGateway implements Gateway {
   private onMessage: ((msg: IncomingMessage) => Promise<void>) | null = null;
   private stopping = false;
   private reconnecting = false;
+  private ownNumber: string | null = null; // phone number from sock.user.id
+  private ownLid: string | null = null;    // linked identity ID from sock.user.lid (@lid JIDs)
   // Track IDs of messages we sent so we don't process our own replies
   private sentIds = new Set<string>();
 
   async start(onMessage: (msg: IncomingMessage) => Promise<void>): Promise<void> {
     this.onMessage = onMessage;
-    mkdirSync(AUTH_DIR, { recursive: true });
+    mkdirSync(AUTH_DIR, { recursive: true, mode: 0o700 });
     await this.connect();
   }
 
   private async connect(): Promise<void> {
-    if (this.reconnecting) return; // prevent double-connect
+    if (this.reconnecting) return;
     this.reconnecting = true;
 
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -94,7 +96,7 @@ export class WhatsAppGateway implements Gateway {
       version,
       auth: state,
       printQRInTerminal: false,
-      syncFullHistory: false,   // skip full history sync — avoids AwaitingInitialSync timeout
+      syncFullHistory: false,
       logger: {
         level:  "silent",
         trace:  () => {},
@@ -120,12 +122,15 @@ export class WhatsAppGateway implements Gateway {
       if (qr) {
         console.log("\n── Scan this QR code with WhatsApp ──\n");
         qrcodeTerminal.generate(qr, { small: true });
-        log("info", "WhatsApp QR ready — scan to authenticate", { qr: qr.slice(0, 40) + "…" });
+        log("info", "WhatsApp QR ready — scan to authenticate");
       }
 
       if (connection === "open") {
         this.reconnecting = false;
-        log("info", "WhatsApp connected");
+        this.ownNumber = this.sock?.user?.id ? jidNumber(this.sock.user.id) : null;
+        const userAny = this.sock?.user as Record<string, unknown> | undefined;
+        this.ownLid = userAny?.lid ? jidNumber(String(userAny.lid)) : null;
+        log("info", "WhatsApp connected", { ownNumber: this.ownNumber, ownLid: this.ownLid });
       }
 
       if (connection === "close" && !this.stopping) {
@@ -144,57 +149,67 @@ export class WhatsAppGateway implements Gateway {
     this.sock.ev.on("messages.upsert", async ({ messages, type }) => {
       if (type !== "notify") return;
 
+      const cfg = loadConfig().whatsapp;
+
       for (const msg of messages) {
         const jid = msg.key.remoteJid ?? "";
 
-        // Skip our own sent replies to prevent infinite loops
+        // Skip our own sent bot replies
         if (msg.key.id && this.sentIds.has(msg.key.id)) {
           this.sentIds.delete(msg.key.id);
           continue;
         }
 
-        if (!jid || jid.endsWith("@g.us")) {
-          log("info", "WhatsApp message ignored (group or no jid)", { jid });
-          continue;
-        }
+        if (!jid || jid.endsWith("@g.us")) continue; // skip groups
 
-        const isFromSelf = msg.key.fromMe === true;
-        const isAllowedExternal = !isFromSelf && isAllowed(jid);
+        const jidNum = jidNumber(jid);
+        const fromMe = msg.key.fromMe === true;
 
-        // Accept: messages from self (saved messages / own chat) OR allowed external numbers
-        if (!isFromSelf && !isAllowedExternal) {
-          log("info", "WhatsApp message ignored (not from self, not in allowed list)", { jid });
+        // Check: saved messages (you → yourself)
+        const isSavedMessages = cfg.allow_saved_messages && fromMe && (
+          (this.ownNumber != null && jidNum === this.ownNumber) ||
+          (this.ownLid    != null && jidNum === this.ownLid)
+        );
+
+        // Check: allowed external contacts
+        const isAllowedContact = !fromMe && cfg.allowed_numbers.length > 0 &&
+          cfg.allowed_numbers.some((n) => jidNum === n.replace(/\D/g, ""));
+
+        if (!isSavedMessages && !isAllowedContact) {
+          log("info", "WhatsApp message ignored", { jid, fromMe });
           continue;
         }
 
         const text = extractText(msg.message);
         if (!text?.trim()) {
-          log("info", "WhatsApp message ignored (no extractable text)", { jid, msgTypes: Object.keys(msg.message ?? {}).join(",") });
+          log("info", "WhatsApp message ignored (no text)", { jid });
           continue;
         }
 
-        log("info", "WhatsApp message received", { jid, fromMe: isFromSelf, text: text.slice(0, 80) });
+        if (isWaRateLimited(jid)) {
+          log("warn", "WhatsApp rate limit exceeded", { jid });
+          try { await this.sock?.sendMessage(jid, { text: "Too many requests — please wait a minute." }); } catch { /* non-fatal */ }
+          continue;
+        }
 
-        // Mark as read so the user sees a blue tick
-        try {
-          await this.sock?.readMessages([msg.key]);
-        } catch { /* non-fatal */ }
+        log("info", "WhatsApp message received", { jid, fromMe, text: text.slice(0, 80) });
 
-        // Show typing indicator while agent processes
-        try {
-          await this.sock?.sendPresenceUpdate("composing", jid);
-        } catch { /* non-fatal */ }
+        try { await this.sock?.readMessages([msg.key]); } catch { /* non-fatal */ }
+        try { await this.sock?.sendPresenceUpdate("composing", jid); } catch { /* non-fatal */ }
+        try { await this.sock?.sendMessage(jid, { react: { text: "👀", key: msg.key } }); } catch { /* non-fatal */ }
 
+        let success = false;
         try {
           await this.onMessage?.({
             source: "whatsapp",
-            externalId: jid,          // store full JID ("xxx@lid" or "xxx@s.whatsapp.net")
+            externalId: jid,
             senderName: msg.pushName ?? undefined,
             text: text.trim(),
           });
+          success = true;
         } finally {
-          // Clear typing indicator when done (whether success or error)
           try { await this.sock?.sendPresenceUpdate("paused", jid); } catch { /* non-fatal */ }
+          try { await this.sock?.sendMessage(jid, { react: { text: success ? "✅" : "❌", key: msg.key } }); } catch { /* non-fatal */ }
         }
       }
     });
@@ -202,13 +217,10 @@ export class WhatsAppGateway implements Gateway {
 
   async send(msg: OutgoingMessage): Promise<void> {
     if (!this.sock) return;
-    // externalId is the full JID stored at receive time — use it directly.
-    // Fall back to @s.whatsapp.net only for old sessions that stored just the number.
     const jid = msg.externalId.includes("@")
       ? msg.externalId
       : `${msg.externalId}@s.whatsapp.net`;
     const result = await this.sock.sendMessage(jid, { text: msg.text });
-    // Track sent ID so messages.upsert doesn't re-process our own reply
     if (result?.key?.id) {
       this.sentIds.add(result.key.id);
       setTimeout(() => this.sentIds.delete(result.key.id!), 30_000);

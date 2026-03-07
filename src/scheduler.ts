@@ -5,12 +5,13 @@ import Anthropic from "@anthropic-ai/sdk";
 import { Cron } from "croner";
 import {
   getDueCronJobs, updateCronJob, createSession, appendMessages,
-  addTokens, logEvent,
+  addTokens, logEvent, getCronJob, createCronJob,
 } from "./sessions.ts";
 import type { CronJob } from "./sessions.ts";
 import { runAgent } from "./agent.ts";
-import { setActiveSession } from "./tools.ts";
 import { log } from "./daemon-log.ts";
+import { consolidate } from "./consolidator.ts";
+import { loadConfig } from "./config.ts";
 
 const MODEL = process.env.OPENCLAW_MODEL ?? "claude-sonnet-4-6";
 const TICK_MS = 60_000; // check every 60 seconds
@@ -35,7 +36,6 @@ async function runCronJob(job: CronJob): Promise<void> {
   logEvent("cron_fired", { sessionId, name: job.name, input: job.prompt });
 
   try {
-    setActiveSession(sessionId);
     const result = await runAgent(job.prompt, {
       client: _client!,
       model: MODEL,
@@ -64,7 +64,6 @@ async function runCronJob(job: CronJob): Promise<void> {
   } finally {
     const nextRun = computeNextRun(job.cron_expr);
     updateCronJob(job.name, { last_run: now, next_run: nextRun ?? undefined });
-    setActiveSession(null);
   }
 }
 
@@ -74,7 +73,46 @@ async function tick(): Promise<void> {
   log("info", `scheduler: ${due.length} job(s) due`);
   // Run jobs sequentially to avoid overloading the API
   for (const job of due) {
-    await runCronJob(job);
+    if (job.name === "_consolidate") {
+      await runConsolidationJob(job);
+    } else {
+      await runCronJob(job);
+    }
+  }
+}
+
+/** Register the nightly memory consolidation cron job if enabled in config. */
+function ensureConsolidationJob(client: Anthropic): void {
+  const cfg = loadConfig();
+  if (!cfg.memory.consolidation_enabled) return;
+
+  const CONSOLIDATION_JOB = "_consolidate";
+  const schedule = cfg.memory.consolidation_schedule; // default "0 3 * * *"
+
+  // Create only if it doesn't exist yet
+  if (getCronJob(CONSOLIDATION_JOB)) return;
+
+  const nextRun = computeNextRun(schedule);
+  createCronJob(CONSOLIDATION_JOB, schedule, "__consolidate__", nextRun ?? undefined);
+  log("info", "consolidation job registered", { schedule, nextRun });
+
+  // Override runCronJob behaviour for this special job name handled below in tick()
+  void client; // client is passed through _client already
+}
+
+/** Run the consolidation pass — used by the _consolidate special job. */
+async function runConsolidationJob(job: CronJob): Promise<void> {
+  const now = new Date().toISOString();
+  log("info", "memory consolidation starting");
+  try {
+    const result = await consolidate(_client ?? undefined);
+    log("info", "memory consolidation done", result);
+    logEvent("tool_call", { name: "consolidator", output: `${result.factsUpserted} facts upserted` });
+  } catch (err) {
+    log("error", "memory consolidation failed", { error: String(err) });
+  } finally {
+    const nextRun = computeNextRun(job.cron_expr);
+    updateCronJob(job.name, { last_run: now, next_run: nextRun ?? undefined });
   }
 }
 
@@ -83,6 +121,7 @@ async function tick(): Promise<void> {
  */
 export function startScheduler(client: Anthropic): void {
   _client = client;
+  ensureConsolidationJob(client);
   // Immediate tick catches missed jobs from while daemon was offline
   tick().catch((err) => log("error", "scheduler tick error", { error: String(err) }));
   _tickInterval = setInterval(() => {

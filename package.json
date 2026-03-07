@@ -16,6 +16,7 @@
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "croner": "^10.0.1",
     "grammy": "^1.41.1",
+    "ipaddr.js": "^2.3.0",
     "playwright": "^1.58.2",
     "qrcode-terminal": "^0.12.0"
   }

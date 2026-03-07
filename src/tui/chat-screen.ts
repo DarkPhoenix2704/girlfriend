@@ -7,15 +7,21 @@ import {
   ScrollBoxRenderable,
   InputRenderable,
   InputRenderableEvents,
+  SelectRenderable,
+  SelectRenderableEvents,
   MarkdownRenderable,
   SyntaxStyle,
 } from "@opentui/core";
 import type { CliRenderer, KeyEvent } from "@opentui/core";
 import { PINK, YELLOW, RED, MUTED, FG, BG } from "./theme.ts";
-import { renameSession, getSession } from "../sessions.ts";
+import { makeHelpBox } from "./components.ts";
+import { renameSession, getSession, loadMessages } from "../sessions.ts";
 import type { Session } from "../sessions.ts";
 import type { IRouter } from "../gateway/types.ts";
 import type Anthropic from "@anthropic-ai/sdk";
+import { writeFileSync } from "fs";
+import { join } from "path";
+
 
 type ContentBlock = Anthropic.TextBlock | Anthropic.ToolUseBlock;
 
@@ -32,6 +38,7 @@ export interface ChatScreenContext {
   initialSessionId: number | null;
   onSessionListRequested: () => void;
   onModelScreenRequested: () => void;
+  onMemoryScreenRequested: () => void;
   onNewChatRequested: () => void;
   onSessionIdChanged: (id: number) => void;
 }
@@ -53,6 +60,8 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
   const pendingTools = new Map<string, TextRenderable>();
   let lastAgentText = "";
   let headerSessionText: TextRenderable;
+  // AskUser: set when the agent is waiting for user input
+  let awaitingAnswer: ((answer: string) => void) | null = null;
 
   // ── Layout ────────────────────────────────────────────────────────────────
   const header = new BoxRenderable(renderer, {
@@ -93,7 +102,7 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
   renderer.root.add(chat);
 
   // ── Autocomplete bar ──────────────────────────────────────────────────────
-  const COMMANDS = ["/sessions", "/new", "/rename ", "/reset", "/compact", "/model"];
+  const COMMANDS = ["/sessions", "/new", "/rename ", "/compact", "/model", "/mode", "/memories", "/export", "/help"];
   const acBar = new BoxRenderable(renderer, {
     width: "100%", height: 1,
     flexDirection: "row", paddingLeft: 2, gap: 3,
@@ -105,6 +114,49 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
     return t;
   });
   renderer.root.add(acBar);
+
+  // ── Question panel (AskUserQuestion tool) ──────────────────────────────────
+  // Wrapper has explicit height set dynamically; questionSelect uses flexGrow: 1
+  // to fill it — the same pattern used in all other SelectRenderable screens.
+  const questionWrapper = new BoxRenderable(renderer, {
+    width: "100%", flexDirection: "column",
+    paddingLeft: 2, paddingRight: 2,
+    visible: false, height: 0,
+  });
+  const questionText = new TextRenderable(renderer, {
+    content: "", fg: YELLOW, width: "100%", height: 1,
+  });
+  const questionSelect = new SelectRenderable(renderer, {
+    width: "100%", flexGrow: 1,
+    backgroundColor: BG, textColor: FG,
+    focusedBackgroundColor: "#44475A", focusedTextColor: PINK,
+    wrapSelection: true,
+    options: [],
+  });
+  questionWrapper.add(questionText);
+  questionWrapper.add(questionSelect);
+  renderer.root.add(questionWrapper);
+
+  function hideQuestionPanel() {
+    questionWrapper.visible = false;
+    questionWrapper.height = 0;
+  }
+
+  questionSelect.on(SelectRenderableEvents.ITEM_SELECTED, () => {
+    const opt = questionSelect.getSelectedOption();
+    if (!opt || !awaitingAnswer) return;
+    hideQuestionPanel();
+    if (opt.value === "__custom__") {
+      inputField.placeholder = "your answer…";
+      inputField.focus();
+    } else {
+      const answer = String(opt.value);
+      addUserBubble(answer);
+      const resolver = awaitingAnswer;
+      awaitingAnswer = null;
+      resolver(answer);
+    }
+  });
 
   let acMatches: string[] = [];
   let acIdx = -1;
@@ -159,6 +211,39 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
   });
   inputBox.add(inputField);
   renderer.root.add(inputBox);
+
+  // Help overlay — toggled by '?'
+  const CHAT_SHORTCUTS: [string, string][] = [
+    ["enter",          "send message"],
+    ["/sessions",      "session list"],
+    ["/new",           "new session"],
+    ["/rename <name>", "rename session"],
+    ["/model",         "switch model"],
+    ["/mode",          "toggle local/daemon"],
+    ["/compact",       "compact context"],
+    ["/memories",      "memory browser"],
+    ["/export",        "export session as markdown"],
+    ["ctrl+o",         "expand/collapse all tool outputs"],
+    ["ctrl+y",         "copy last response to clipboard"],
+    ["ctrl+x",         "toggle selection mode"],
+    ["esc esc",        "cancel running agent"],
+    ["ctrl+c",         "exit"],
+  ];
+  const helpBox = makeHelpBox(renderer, CHAT_SHORTCUTS);
+  renderer.root.add(helpBox);
+
+  let helpVisible = false;
+  const helpHandler = (key: KeyEvent) => {
+    if (key.ctrl) return;
+    const typing = renderer.currentFocusedRenderable === inputField;
+    if ((key.name === "?" && !typing) || (helpVisible && key.name === "escape")) {
+      key.preventDefault();
+      helpVisible = !helpVisible;
+      chat.visible = !helpVisible;
+      helpBox.visible = helpVisible;
+    }
+  };
+  renderer._internalKeyInput.onInternal("keypress", helpHandler);
 
   function updateRateLimit(info: import("../agent.ts").RateLimitInfo) {
     const parts: string[] = [];
@@ -312,8 +397,9 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
       case "WebFetch":    summary = arg("url") ?? ""; break;
       case "BrowserOpen": summary = arg("url") ?? ""; break;
       case "Search":      summary = arg("query") ?? ""; break;
-      case "Task":        summary = arg("description") ?? arg("prompt") ?? ""; break;
-      default:            summary = Object.values(inp).map(v => String(v).slice(0, 40)).join(", ");
+      case "Task":              summary = arg("description") ?? arg("prompt") ?? ""; break;
+      case "AskUserQuestion":   summary = arg("question") ?? ""; break;
+      default:                  summary = Object.values(inp).map(v => String(v).slice(0, 40)).join(", ");
     }
     return `⏺ ${name}(${summary})`;
   }
@@ -345,7 +431,6 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
   // ── Replay history into chat ───────────────────────────────────────────────
   function replayHistory() {
     if (sessionId == null) return;
-    const { loadMessages } = require("../sessions.ts") as typeof import("../sessions.ts");
     const history = loadMessages(sessionId);
     const replayResultTexts = new Map<string, TextRenderable>();
 
@@ -394,12 +479,31 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
 
   // ── Input handler ─────────────────────────────────────────────────────────
   inputField.on(InputRenderableEvents.ENTER, async () => {
+    // AskUser: free-text answer (when no options, or after "Write custom message" was chosen)
+    if (awaitingAnswer) {
+      const raw = inputField.value.trim();
+      if (!raw) return;
+      inputField.value = "";
+      inputField.placeholder = "message…";
+      addUserBubble(raw);
+      const resolver = awaitingAnswer;
+      awaitingAnswer = null;
+      resolver(raw);
+      return;
+    }
+
     if (agentRunning) return;
     const value = inputField.value.trim();
     if (!value) return;
     inputField.value = "";
 
     // Commands
+    if (value === "?" || value === "/help") {
+      helpVisible = true;
+      chat.visible = false;
+      helpBox.visible = true;
+      return;
+    }
     if (value === "/sessions") { ctx.onSessionListRequested(); return; }
     if (value === "/new")      { ctx.onNewChatRequested(); return; }
     if (value.startsWith("/rename ")) {
@@ -412,7 +516,52 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
       }
       return;
     }
-    if (value === "/model")  { ctx.onModelScreenRequested(); return; }
+    if (value === "/model")    { ctx.onModelScreenRequested(); return; }
+    if (value === "/memories") { ctx.onMemoryScreenRequested(); return; }
+    if (value === "/export") {
+      if (sessionId == null) { addLine("  nothing to export"); return; }
+      const history = loadMessages(sessionId);
+      const lines: string[] = [`# Session #${sessionId} — ${session?.name ?? ""}\n`];
+      // Map tool_use id → name so we can label tool results
+      const toolNames = new Map<string, string>();
+      for (const m of history) {
+        if (m.role === "user") {
+          if (typeof m.content === "string") {
+            const cleaned = m.content.replace(/^<system-reminder>[\s\S]*?<\/system-reminder>\n?/, "").trim();
+            if (cleaned) lines.push(`**You:** ${cleaned}\n`);
+          } else if (Array.isArray(m.content)) {
+            for (const b of m.content as Anthropic.ToolResultBlockParam[]) {
+              if (b.type !== "tool_result") continue;
+              const name = toolNames.get(b.tool_use_id) ?? "tool";
+              const text = typeof b.content === "string"
+                ? b.content
+                : Array.isArray(b.content)
+                  ? (b.content as Anthropic.TextBlockParam[]).filter(x => x.type === "text").map(x => x.text).join("")
+                  : "";
+              if (text) lines.push(`> **${name} result:** ${text.slice(0, 500)}${text.length > 500 ? "…" : ""}\n`);
+            }
+          }
+        } else {
+          const blocks = Array.isArray(m.content) ? m.content : [{ type: "text", text: String(m.content) }];
+          let assistantText = "";
+          for (const b of blocks as Anthropic.ContentBlock[]) {
+            if (b.type === "text" && b.text) {
+              assistantText += b.text;
+            } else if (b.type === "tool_use") {
+              if (assistantText) { lines.push(`**Assistant:** ${assistantText}\n`); assistantText = ""; }
+              toolNames.set(b.id, b.name);
+              const argStr = JSON.stringify(b.input).slice(0, 120);
+              lines.push(`> **${b.name}(${argStr})**\n`);
+            }
+          }
+          if (assistantText) lines.push(`**Assistant:** ${assistantText}\n`);
+        }
+      }
+      const outPath = join(ctx.cwd, `session-${sessionId}.md`);
+      writeFileSync(outPath, lines.join("\n"));
+      addLine(`  exported → ${outPath}`, PINK);
+      return;
+    }
     if (value.startsWith("/mode")) {
       const arg = value.slice(5).trim();
       if (!ctx.daemonRouter) { addLine("  daemon not running — local mode only"); return; }
@@ -420,11 +569,6 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
       mode = next;
       headerModeText.content = `mode: ${mode}`;
       addLine(`  switched to ${mode} mode`);
-      return;
-    }
-    if (value === "/reset") {
-      // Start a fresh session
-      ctx.onNewChatRequested();
       return;
     }
     if (value === "/compact") {
@@ -460,6 +604,34 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
     inputField.blur();
     addUserBubble(value);
 
+    // Wire up AskUser tool — SelectRenderable for options, plain input for free text
+    const askUser = (question: string, options?: string[]) => new Promise<string>((resolve, reject) => {
+      awaitingAnswer = resolve;
+      if (options && options.length > 0) {
+        questionText.content = question;
+        const allOpts = [
+          ...options.map((opt) => ({ name: `  ${opt}`, value: opt })),
+          { name: "  Write custom message…", value: "__custom__" },
+        ];
+        questionSelect.options = allOpts;
+        // 1 (text) + N (options) + 1 (padding) — wrapper gets explicit height so
+        // SelectRenderable's flexGrow: 1 can fill the rest
+        questionWrapper.height = 1 + allOpts.length + 1;
+        questionWrapper.visible = true;
+        questionSelect.focus();
+      } else {
+        addLine(`  ${question}`, YELLOW);
+        inputField.placeholder = "your answer…";
+        inputField.focus();
+      }
+      agentAbort!.signal.addEventListener("abort", () => {
+        hideQuestionPanel();
+        awaitingAnswer = null;
+        inputField.placeholder = "message…";
+        reject(new Error("aborted"));
+      }, { once: true });
+    });
+
     let currentBubble: ReturnType<typeof addAgentBubble> | null = addAgentBubble();
     let currentText = "";
     let bubbleHasContent = false;
@@ -478,6 +650,7 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
           cwd: ctx.cwd,
           claudeMd: ctx.claudeMd,
           claudeMdPath: ctx.claudeMdPath,
+          askUser,
           streaming: {
             onText: (chunk) => {
               if (!currentBubble) currentBubble = addAgentBubble();
@@ -493,6 +666,7 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
                 chat.remove(currentBubble.row.id);
                 currentBubble = null;
               }
+              if (name === "AskUserQuestion") return;
               const resultText = addToolCall(name, inp as Record<string, unknown>);
               pendingTools.set(id, resultText);
             },
@@ -522,11 +696,20 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
       lastAgentText = result.text;
 
       // Update session state if newly created
-      if (sessionId == null) {
+      const isNewSession = sessionId == null;
+      if (isNewSession) {
         sessionId = result.sessionId;
         session = getSession(sessionId);
         ctx.onSessionIdChanged(sessionId);
         headerSessionText.content = `#${sessionId}  ·  ${session?.name ?? ""}`;
+        // Poll once for auto-rename (Haiku renames in background after first turn)
+        setTimeout(() => {
+          const refreshed = getSession(sessionId!);
+          if (refreshed && refreshed.name !== session?.name) {
+            session = refreshed;
+            headerSessionText.content = `#${sessionId}  ·  ${refreshed.name}`;
+          }
+        }, 5000);
       }
 
       const t = result.inputTokens, o = result.outputTokens;
@@ -542,19 +725,24 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
     }
 
     stopSpinner();
+    awaitingAnswer = null;
+    hideQuestionPanel();
     agentRunning = false;
     agentAbort = null;
     clearEscPrimed();
+    inputField.placeholder = "message…";
     inputField.focus();
   });
 
   // Return cleanup function
   return () => {
+    hideQuestionPanel();
     renderer._internalKeyInput.offInternal("keypress", tabHandler);
     renderer._internalKeyInput.offInternal("keypress", ctrlOHandler);
     renderer._internalKeyInput.offInternal("keypress", selectionModeHandler);
     renderer._internalKeyInput.offInternal("keypress", clipboardHandler);
     renderer._internalKeyInput.offInternal("keypress", escHandler);
+    renderer._internalKeyInput.offInternal("keypress", helpHandler);
     renderer.useMouse = true;
   };
 }

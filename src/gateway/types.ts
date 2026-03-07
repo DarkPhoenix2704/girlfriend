@@ -42,6 +42,8 @@ export interface DispatchOptions {
   claudeMdPath?: string;
   /** Streaming callbacks for interactive (TUI) use */
   streaming?: StreamingCallbacks;
+  /** AskUser callback — wires up the AskUserQuestion tool for interactive (TUI) sessions. */
+  askUser?: (question: string, options?: string[]) => Promise<string>;
 }
 
 export interface DispatchResult {

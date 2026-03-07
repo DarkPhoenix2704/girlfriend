@@ -4,7 +4,25 @@ import Anthropic from "@anthropic-ai/sdk";
 import { COMPACTION_PROMPT } from "./prompts.ts";
 import { withRetry } from "./retry.ts";
 
-export const COMPACTION_TOKEN_THRESHOLD = 50_000;
+// Always use Haiku for compaction — cheaper and sufficient for summarization
+const COMPACTION_MODEL = "claude-haiku-4-5-20251001";
+
+const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  "claude-opus-4":   200_000,
+  "claude-sonnet-4": 200_000,
+  "claude-haiku-4":  200_000,
+  "claude-3-5":      200_000,
+  "claude-3-opus":   200_000,
+};
+
+/** Returns compaction threshold: 50% of the model's context window. */
+export function getCompactionThreshold(model: string): number {
+  for (const [prefix, ctx] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
+    if (model.includes(prefix)) return Math.floor(ctx * 0.5);
+  }
+  return 100_000; // safe default
+}
+
 
 export interface CompactionResult {
   compacted: boolean;
@@ -23,7 +41,7 @@ export async function maybeCompact(
   model: string,
   totalTokensUsed: number
 ): Promise<CompactionResult> {
-  if (totalTokensUsed < COMPACTION_TOKEN_THRESHOLD) {
+  if (totalTokensUsed < getCompactionThreshold(model)) {
     return { compacted: false, messages };
   }
 
@@ -47,7 +65,7 @@ export async function compact(
   client: Anthropic,
   messages: Anthropic.MessageParam[],
   systemPrompt: string,
-  model: string
+  _model: string, // kept for signature compatibility; we always use Haiku
 ): Promise<string> {
   const compactionMessages: Anthropic.MessageParam[] = [
     ...messages,
@@ -56,8 +74,8 @@ export async function compact(
 
   const response = await withRetry(() =>
     client.messages.create({
-      model,
-      max_tokens: 2048,
+      model: COMPACTION_MODEL,
+      max_tokens: 8192,
       system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
       messages: compactionMessages,
     })

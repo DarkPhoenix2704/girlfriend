@@ -180,18 +180,14 @@ export const SUBAGENT_SYSTEM_PROMPT = `You are a subagent. Given the user's mess
 
 // Environment notes appended to subagent system prompts
 export function buildSubagentNotes(cwd: string, model: string): string {
-  return `
-Notes:
-- Agent threads always have their cwd reset between bash calls, as a result please only use absolute file paths.
-- In your final response, share file paths (always absolute, never relative) that are relevant to the task. Include code snippets only when the exact text is load-bearing.
-- For clear communication with the user the assistant MUST avoid using emojis.
-- Do not use a colon before tool calls.
-
-Here is useful information about the environment you are running in:
-<env>
+  return `<env>
 Working directory: ${cwd}
 Platform: ${process.platform}
 Shell: ${process.env.SHELL || "bash"}
+Model: ${model}
 </env>
-You are powered by the model named ${model}.`;
+Notes:
+- Use absolute file paths only — cwd resets between bash calls.
+- No emojis. No colon before tool calls.
+- Final response: include absolute paths and load-bearing code snippets only.`;
 }

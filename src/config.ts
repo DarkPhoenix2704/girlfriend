@@ -2,7 +2,7 @@
 // All fields are optional; missing keys fall back to sensible defaults or env vars.
 // Uses Bun's native TOML import support (no extra package needed).
 
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, watch } from "fs";
 import { join } from "path";
 
 const DATA_DIR = join(process.env.HOME ?? ".", ".girlfriend");
@@ -17,6 +17,10 @@ export interface Config {
   };
   whatsapp: {
     enabled: boolean;
+    /** Accept messages you send to your own Saved Messages chat */
+    allow_saved_messages: boolean;
+    /** Accept messages from these phone numbers (e.g. ["919876543210"]) */
+    allowed_numbers: string[];
   };
   browser: {
     headless: boolean;
@@ -46,7 +50,7 @@ export interface Config {
 const DEFAULTS: Config = {
   model:    { default: "claude-sonnet-4-6" },
   telegram: { enabled: true },
-  whatsapp: { enabled: false },
+  whatsapp: { enabled: false, allow_saved_messages: true, allowed_numbers: [] },
   browser:  { headless: true },
   search:   { country: "IN", count: 5 },
   notify:   { channel: "telegram", chat_id: "" },
@@ -108,7 +112,8 @@ enabled = true
 
 [whatsapp]
 enabled = false
-# Set WHATSAPP_ALLOWED_NUMBERS env var (comma-separated) to activate
+allow_saved_messages = true        # accept messages you send to yourself (Saved Messages)
+allowed_numbers = []               # e.g. ["919876543210"] to also accept specific contacts
 
 [browser]
 headless = true   # set to false to watch the browser
@@ -137,4 +142,33 @@ port = 7070   # TUI connects here when daemon is running
 /** Convenience accessor — always returns the cached config. */
 export function config(): Config {
   return loadConfig();
+}
+
+/**
+ * Watch config.toml for changes and reload automatically.
+ * Call once from the daemon on startup. Returns a cleanup function.
+ */
+export function watchConfig(onChange?: (cfg: Config) => void): () => void {
+  if (!existsSync(CONFIG_PATH)) return () => {};
+
+  let debounce: ReturnType<typeof setTimeout> | null = null;
+  const watcher = watch(CONFIG_PATH, () => {
+    if (debounce) clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      const prev = _config;
+      _config = null; // invalidate cache so loadConfig re-reads
+      try {
+        const newCfg = loadConfig();
+        onChange?.(newCfg);
+      } catch (err) {
+        _config = prev; // restore previous config on parse failure
+        console.error("[config] reload failed, keeping previous config:", err);
+      }
+    }, 300);
+  });
+
+  return () => {
+    if (debounce) clearTimeout(debounce);
+    watcher.close();
+  };
 }

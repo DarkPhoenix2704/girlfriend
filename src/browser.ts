@@ -6,6 +6,8 @@ import { chromium, type Browser, type Page } from "playwright";
 
 let _browser: Browser | null = null;
 let _page: Page | null = null;
+let _lastUsedAt = 0;
+const BROWSER_IDLE_MS = 5 * 60 * 1000; // close after 5 min idle
 
 async function launchBrowser(): Promise<Browser> {
   const headed = process.env.BROWSER_HEADED === "1";
@@ -26,6 +28,11 @@ export async function getBrowser(): Promise<Browser> {
 }
 
 export async function getPage(): Promise<Page> {
+  // Auto-close stale browser to reclaim memory after idle period
+  if (_browser && _browser.isConnected() && Date.now() - _lastUsedAt > BROWSER_IDLE_MS) {
+    await closeBrowser();
+  }
+  _lastUsedAt = Date.now();
   const browser = await getBrowser();
   if (!_page || _page.isClosed()) {
     const ctx = await browser.newContext({
