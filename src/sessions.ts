@@ -6,18 +6,60 @@ import { join } from "path";
 import { mkdirSync } from "fs";
 import type Anthropic from "@anthropic-ai/sdk";
 
-// DB lives in ~/.girlfriend/sessions.db
-const DB_DIR = join(process.env.HOME ?? ".", ".girlfriend");
-const DB_PATH = join(DB_DIR, "sessions.db");
+// DB lives in ~/.openclaw/data.db
+const DB_DIR = join(process.env.HOME ?? ".", ".openclaw");
+const DB_PATH = join(DB_DIR, "data.db");
 export interface Session {
   id: number;
   name: string;
   model: string;
+  source: string;
+  external_id: string | null;
+  namespace: string | null;
+  owner_id: string | null;
   created_at: string;
   updated_at: string;
   total_input_tokens: number;
   total_output_tokens: number;
   message_count: number;
+}
+
+export type SessionSource = "local" | "telegram" | "whatsapp" | "cron" | "http";
+
+export interface MemoryFact {
+  id: number;
+  key: string;
+  value: string;
+  category: string | null;
+  namespace: string | null;
+  source_session: number | null;
+  confidence: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EventLog {
+  id: number;
+  session_id: number | null;
+  type: string;
+  name: string | null;
+  input: string | null;
+  output: string | null;
+  tokens_used: number | null;
+  created_at: string;
+}
+
+export type EventType = "tool_call" | "cron_fired" | "message_received" | "subagent_run" | "compaction";
+
+export interface CronJob {
+  id: number;
+  name: string;
+  cron_expr: string;
+  prompt: string;
+  last_run: string | null;
+  next_run: string | null;
+  enabled: number;
+  created_at: string;
 }
 
 // ─── Migrations ───────────────────────────────────────────────────────────────
@@ -66,6 +108,127 @@ const MIGRATIONS: { id: number; sql: string }[] = [
       );
     `,
   },
+  // Phase 1: sessions get source/channel metadata
+  {
+    id: 4,
+    sql: `
+      ALTER TABLE sessions ADD COLUMN source      TEXT NOT NULL DEFAULT 'local';
+      ALTER TABLE sessions ADD COLUMN external_id TEXT;
+      ALTER TABLE sessions ADD COLUMN namespace   TEXT;
+      ALTER TABLE sessions ADD COLUMN owner_id    TEXT;
+    `,
+  },
+  // Phase 1: structured fact memory (replaces flat key-value for rich use cases)
+  {
+    id: 5,
+    sql: `
+      CREATE TABLE IF NOT EXISTS memories (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        key            TEXT NOT NULL,
+        value          TEXT NOT NULL,
+        category       TEXT,
+        namespace      TEXT,
+        source_session INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+        confidence     REAL NOT NULL DEFAULT 1.0,
+        created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS memories_key_namespace ON memories(key, COALESCE(namespace, ''));
+      CREATE INDEX IF NOT EXISTS memories_category ON memories(category);
+      CREATE INDEX IF NOT EXISTS memories_namespace ON memories(namespace);
+    `,
+  },
+  // Phase 1: full-text search over messages
+  {
+    id: 6,
+    sql: `
+      CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+        role,
+        content,
+        content=messages,
+        content_rowid=id
+      );
+
+      CREATE TRIGGER IF NOT EXISTS messages_fts_insert
+        AFTER INSERT ON messages BEGIN
+          INSERT INTO messages_fts(rowid, role, content) VALUES (new.id, new.role, new.content);
+        END;
+
+      CREATE TRIGGER IF NOT EXISTS messages_fts_delete
+        AFTER DELETE ON messages BEGIN
+          INSERT INTO messages_fts(messages_fts, rowid, role, content) VALUES ('delete', old.id, old.role, old.content);
+        END;
+
+      CREATE TRIGGER IF NOT EXISTS messages_fts_update
+        AFTER UPDATE ON messages BEGIN
+          INSERT INTO messages_fts(messages_fts, rowid, role, content) VALUES ('delete', old.id, old.role, old.content);
+          INSERT INTO messages_fts(rowid, role, content) VALUES (new.id, new.role, new.content);
+        END;
+    `,
+  },
+  // Phase 1: full-text search over memory facts
+  {
+    id: 7,
+    sql: `
+      CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+        key,
+        value,
+        content=memories,
+        content_rowid=id
+      );
+
+      CREATE TRIGGER IF NOT EXISTS memories_fts_insert
+        AFTER INSERT ON memories BEGIN
+          INSERT INTO memories_fts(rowid, key, value) VALUES (new.id, new.key, new.value);
+        END;
+
+      CREATE TRIGGER IF NOT EXISTS memories_fts_delete
+        AFTER DELETE ON memories BEGIN
+          INSERT INTO memories_fts(memories_fts, rowid, key, value) VALUES ('delete', old.id, old.key, old.value);
+        END;
+
+      CREATE TRIGGER IF NOT EXISTS memories_fts_update
+        AFTER UPDATE ON memories BEGIN
+          INSERT INTO memories_fts(memories_fts, rowid, key, value) VALUES ('delete', old.id, old.key, old.value);
+          INSERT INTO memories_fts(rowid, key, value) VALUES (new.id, new.key, new.value);
+        END;
+    `,
+  },
+  // Phase 1: full audit event log
+  {
+    id: 8,
+    sql: `
+      CREATE TABLE IF NOT EXISTS events (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+        type        TEXT NOT NULL,
+        name        TEXT,
+        input       TEXT,
+        output      TEXT,
+        tokens_used INTEGER,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS events_session ON events(session_id);
+      CREATE INDEX IF NOT EXISTS events_type    ON events(type);
+      CREATE INDEX IF NOT EXISTS events_created ON events(created_at);
+    `,
+  },
+  // Phase 2: cron jobs table
+  {
+    id: 9,
+    sql: `
+      CREATE TABLE IF NOT EXISTS cron_jobs (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT NOT NULL UNIQUE,
+        cron_expr  TEXT NOT NULL,
+        prompt     TEXT NOT NULL,
+        last_run   TEXT,
+        next_run   TEXT,
+        enabled    INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `,
+  },
 ];
 
 function runMigrations(database: Database): void {
@@ -106,10 +269,17 @@ function db(): Database {
 
 // ─── Session CRUD ─────────────────────────────────────────────────────────────
 
-export function createSession(name: string, model: string): number {
+export function createSession(
+  name: string,
+  model: string,
+  source: SessionSource = "local",
+  externalId?: string,
+  namespace?: string,
+  ownerId?: string,
+): number {
   const result = db()
-    .prepare("INSERT INTO sessions (name, model) VALUES (?, ?) RETURNING id")
-    .get(name, model) as { id: number };
+    .prepare("INSERT INTO sessions (name, model, source, external_id, namespace, owner_id) VALUES (?, ?, ?, ?, ?, ?) RETURNING id")
+    .get(name, model, source, externalId ?? null, namespace ?? null, ownerId ?? null) as { id: number };
   return result.id;
 }
 
@@ -144,6 +314,18 @@ export function deleteSession(id: number): void {
 
 export function renameSession(id: number, name: string): void {
   db().prepare("UPDATE sessions SET name = ? WHERE id = ?").run(name, id);
+}
+
+export function getSessionByExternalId(source: SessionSource, externalId: string): Session | null {
+  return db()
+    .prepare(`
+      SELECT s.*, COUNT(m.id) as message_count
+      FROM sessions s
+      LEFT JOIN messages m ON m.session_id = s.id
+      WHERE s.source = ? AND s.external_id = ?
+      GROUP BY s.id
+    `)
+    .get(source, externalId) as Session | null;
 }
 
 // ─── Message persistence ──────────────────────────────────────────────────────
@@ -279,6 +461,223 @@ export function memoryList(): MemoryEntry[] {
 export function memoryDelete(key: string): boolean {
   const result = db().prepare("DELETE FROM memory WHERE key = ?").run(key);
   return result.changes > 0;
+}
+
+// ─── Structured memories ──────────────────────────────────────────────────────
+
+export function upsertMemory(
+  key: string,
+  value: string,
+  options: {
+    category?: string;
+    namespace?: string;
+    sourceSession?: number;
+    confidence?: number;
+  } = {}
+): void {
+  db().prepare(`
+    INSERT INTO memories (key, value, category, namespace, source_session, confidence, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(key, COALESCE(namespace, '')) DO UPDATE SET
+      value          = excluded.value,
+      category       = excluded.category,
+      confidence     = excluded.confidence,
+      source_session = excluded.source_session,
+      updated_at     = datetime('now')
+  `).run(
+    key,
+    value,
+    options.category ?? null,
+    options.namespace ?? null,
+    options.sourceSession ?? null,
+    options.confidence ?? 1.0,
+  );
+}
+
+export function searchMemories(
+  query: string,
+  options: { category?: string; namespace?: string; limit?: number } = {}
+): MemoryFact[] {
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
+
+  if (query.trim()) {
+    // FTS5 search
+    const rows = db().prepare(`
+      SELECT m.* FROM memories m
+      JOIN memories_fts fts ON fts.rowid = m.id
+      WHERE memories_fts MATCH ?
+      ${options.category ? "AND m.category = ?" : ""}
+      ${options.namespace !== undefined ? "AND m.namespace IS ?" : ""}
+      ORDER BY rank
+      LIMIT ?
+    `).all(
+      query,
+      ...(options.category ? [options.category] : []),
+      ...(options.namespace !== undefined ? [options.namespace] : []),
+      options.limit ?? 20,
+    ) as MemoryFact[];
+    return rows;
+  }
+
+  // No query — list by category/namespace
+  if (options.category) { conditions.push("category = ?"); params.push(options.category); }
+  if (options.namespace !== undefined) { conditions.push("namespace IS ?"); params.push(options.namespace); }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  return db().prepare(`
+    SELECT * FROM memories ${where} ORDER BY updated_at DESC LIMIT ?
+  `).all(...params, options.limit ?? 20) as MemoryFact[];
+}
+
+export function deleteMemory(key: string, namespace?: string): boolean {
+  const result = db().prepare(
+    "DELETE FROM memories WHERE key = ? AND COALESCE(namespace, '') = COALESCE(?, '')"
+  ).run(key, namespace ?? null);
+  return result.changes > 0;
+}
+
+export function listMemories(options: { category?: string; namespace?: string; limit?: number } = {}): MemoryFact[] {
+  const conditions: string[] = [];
+  const params: (string | number | null)[] = [];
+  if (options.category) { conditions.push("category = ?"); params.push(options.category); }
+  if (options.namespace !== undefined) { conditions.push("namespace IS ?"); params.push(options.namespace ?? null); }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  return db().prepare(
+    `SELECT * FROM memories ${where} ORDER BY updated_at DESC LIMIT ?`
+  ).all(...params, options.limit ?? 50) as MemoryFact[];
+}
+
+// ─── Full-text message search ─────────────────────────────────────────────────
+
+export interface MessageSearchResult {
+  message_id: number;
+  session_id: number;
+  session_name: string;
+  role: string;
+  content: string;
+  created_at: string;
+  rank: number;
+}
+
+export function searchMessages(
+  query: string,
+  options: { sessionId?: number; role?: string; limit?: number; since?: string } = {}
+): MessageSearchResult[] {
+  const extraConditions: string[] = [];
+  const extraParams: (string | number)[] = [];
+
+  if (options.sessionId) { extraConditions.push("m.session_id = ?"); extraParams.push(options.sessionId); }
+  if (options.role) { extraConditions.push("m.role = ?"); extraParams.push(options.role); }
+  if (options.since) { extraConditions.push("m.created_at >= ?"); extraParams.push(options.since); }
+
+  const extra = extraConditions.length ? `AND ${extraConditions.join(" AND ")}` : "";
+
+  return db().prepare(`
+    SELECT
+      m.id        AS message_id,
+      m.session_id,
+      s.name      AS session_name,
+      m.role,
+      m.content,
+      m.created_at,
+      fts.rank
+    FROM messages_fts fts
+    JOIN messages m ON m.id = fts.rowid
+    JOIN sessions s ON s.id = m.session_id
+    WHERE messages_fts MATCH ? ${extra}
+    ORDER BY rank
+    LIMIT ?
+  `).all(query, ...extraParams, options.limit ?? 20) as MessageSearchResult[];
+}
+
+// ─── Events ───────────────────────────────────────────────────────────────────
+
+export function logEvent(
+  type: EventType,
+  options: {
+    sessionId?: number | null;
+    name?: string;
+    input?: unknown;
+    output?: string;
+    tokensUsed?: number;
+  } = {}
+): void {
+  db().prepare(`
+    INSERT INTO events (session_id, type, name, input, output, tokens_used)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    options.sessionId ?? null,
+    type,
+    options.name ?? null,
+    options.input != null ? JSON.stringify(options.input) : null,
+    options.output ?? null,
+    options.tokensUsed ?? null,
+  );
+}
+
+export function queryEvents(options: {
+  sessionId?: number;
+  type?: EventType;
+  name?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+} = {}): EventLog[] {
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
+
+  if (options.sessionId != null) { conditions.push("session_id = ?"); params.push(options.sessionId); }
+  if (options.type) { conditions.push("type = ?"); params.push(options.type); }
+  if (options.name) { conditions.push("name LIKE ?"); params.push(`%${options.name}%`); }
+  if (options.since) { conditions.push("created_at >= ?"); params.push(options.since); }
+  if (options.until) { conditions.push("created_at <= ?"); params.push(options.until); }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  return db().prepare(
+    `SELECT * FROM events ${where} ORDER BY created_at DESC LIMIT ?`
+  ).all(...params, options.limit ?? 50) as EventLog[];
+}
+
+// ─── Cron jobs ────────────────────────────────────────────────────────────────
+
+export function createCronJob(name: string, cronExpr: string, prompt: string, nextRun?: string): CronJob {
+  const result = db().prepare(`
+    INSERT INTO cron_jobs (name, cron_expr, prompt, next_run)
+    VALUES (?, ?, ?, ?)
+    RETURNING *
+  `).get(name, cronExpr, prompt, nextRun ?? null) as CronJob;
+  return result;
+}
+
+export function listCronJobs(): CronJob[] {
+  return db().prepare("SELECT * FROM cron_jobs ORDER BY next_run ASC").all() as CronJob[];
+}
+
+export function getCronJob(name: string): CronJob | null {
+  return db().prepare("SELECT * FROM cron_jobs WHERE name = ?").get(name) as CronJob | null;
+}
+
+export function updateCronJob(name: string, updates: Partial<Pick<CronJob, "cron_expr" | "prompt" | "last_run" | "next_run" | "enabled">>): void {
+  const fields = Object.entries(updates)
+    .map(([k]) => `${k} = ?`)
+    .join(", ");
+  const values = Object.values(updates);
+  if (!fields) return;
+  db().prepare(`UPDATE cron_jobs SET ${fields} WHERE name = ?`).run(...values, name);
+}
+
+export function deleteCronJob(name: string): boolean {
+  const result = db().prepare("DELETE FROM cron_jobs WHERE name = ?").run(name);
+  return result.changes > 0;
+}
+
+export function getDueCronJobs(): CronJob[] {
+  return db().prepare(`
+    SELECT * FROM cron_jobs
+    WHERE enabled = 1
+      AND (next_run IS NULL OR next_run <= datetime('now'))
+    ORDER BY next_run ASC
+  `).all() as CronJob[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

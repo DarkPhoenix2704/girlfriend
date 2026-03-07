@@ -2,7 +2,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { buildSystemPrompt } from "./prompts.ts";
-import { TOOL_SCHEMAS, executeTool, CONCURRENT_SAFE_TOOLS } from "./tools.ts";
+import { TOOL_SCHEMAS, executeTool, CONCURRENT_SAFE_TOOLS, setActiveSession } from "./tools.ts";
 import { maybeCompact, compact } from "./compaction.ts";
 import { withRetry } from "./retry.ts";
 
@@ -41,6 +41,8 @@ export interface AgentOptions {
   onRateLimit?: (info: RateLimitInfo) => void;
   /** Abort signal — abort() cancels the current stream and throws */
   signal?: AbortSignal;
+  /** Session ID for event logging */
+  sessionId?: number | null;
 }
 
 export interface RateLimitInfo {
@@ -93,6 +95,8 @@ export async function runAgent(
   const platform = options.platform ?? process.platform;
   const shell = options.shell ?? (process.env.SHELL || "bash");
   const maxTurns = options.maxTurns ?? 0;
+
+  setActiveSession(options.sessionId ?? null);
 
   const toolNames = options.tools ?? TOOL_SCHEMAS.map((t) => t.name);
   const activeTools = TOOL_SCHEMAS.filter((t) => toolNames.includes(t.name));

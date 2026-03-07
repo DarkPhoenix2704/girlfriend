@@ -4,6 +4,7 @@
 import { resolve } from "path";
 import * as impls from "./impl/index.ts";
 import type { ToolDefinition, ToolContext } from "./types.ts";
+import { logEvent } from "../sessions.ts";
 
 export type { ToolInput, ToolResult, ToolContext, ToolDefinition } from "./types.ts";
 
@@ -27,6 +28,10 @@ export function setTaskExecutor(fn: NonNullable<ToolContext["taskExecutor"]>) {
   _taskExecutor = fn;
 }
 
+// Active session for event logging — set per-agent-run
+let _activeSessionId: number | null = null;
+export function setActiveSession(id: number | null) { _activeSessionId = id; }
+
 export async function executeTool(
   name: string,
   input: unknown,
@@ -46,9 +51,17 @@ export async function executeTool(
   const ctx: ToolContext = { readFiles, cwd, taskExecutor: _taskExecutor ?? undefined };
 
   try {
-    return await tool.execute(typedInput, ctx);
+    const result = await tool.execute(typedInput, ctx);
+    logEvent("tool_call", {
+      sessionId: _activeSessionId,
+      name,
+      input: typedInput,
+      output: result.content.slice(0, 500), // cap to avoid bloating events table
+    });
+    return result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    logEvent("tool_call", { sessionId: _activeSessionId, name, input: typedInput, output: `ERROR: ${msg}` });
     return { content: `<tool_use_error>Error calling tool (${name}): ${msg}</tool_use_error>`, is_error: true };
   }
 }
