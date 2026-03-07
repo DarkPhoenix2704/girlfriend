@@ -71,8 +71,20 @@ export async function runSubagent(
   let result = "";
 
   for (let turn = 0; turn < 50; turn++) {
+    const cachedTools = activeTools.length > 0
+      ? [
+          ...activeTools.slice(0, -1),
+          { ...activeTools[activeTools.length - 1]!, cache_control: { type: "ephemeral" as const } },
+        ] as Anthropic.Tool[]
+      : [] as Anthropic.Tool[];
     const response = await withRetry(() =>
-      client.messages.create({ model, max_tokens: 8192, system: systemPrompt, tools: activeTools as Anthropic.Tool[], messages })
+      client.messages.create({
+        model,
+        max_tokens: 8192,
+        system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
+        tools: cachedTools,
+        messages,
+      })
     );
 
     const textBlocks = response.content.filter(
@@ -132,6 +144,7 @@ export function createTaskExecutor(
       description,
       prompt: "",
       tools: ["Read", "Glob", "Grep", "WebFetch"],
+      model: "haiku" as const,
     };
 
     try {

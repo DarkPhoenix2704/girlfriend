@@ -472,6 +472,8 @@ export function mountChatScreen(ctx: ChatScreenContext): () => void {
           platform: process.platform,
           shell: process.env.SHELL || "bash",
           model: ctx.currentModel,
+          claudeMd: ctx.claudeMd,
+          claudeMdPath: ctx.claudeMdPath,
         });
         const summary = await compact(ctx.client, history, systemPrompt, ctx.currentModel);
         history = [{ role: "user", content: summary }];

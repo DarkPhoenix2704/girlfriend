@@ -9,6 +9,7 @@ export function buildSystemPrompt(options: {
   shell: string;
   model: string;
   claudeMd?: string;
+  claudeMdPath?: string;
 }): string {
   const sections = [
     buildIdentity(),
@@ -19,9 +20,28 @@ export function buildSystemPrompt(options: {
     buildOutputEfficiency(),
     buildToneAndStyle(),
     buildEnvironment(options),
+    buildClaudeMdSection(options.claudeMd, options.claudeMdPath),
   ].filter(Boolean).join("\n\n");
 
   return sections;
+}
+
+function buildClaudeMdSection(claudeMd?: string, claudeMdPath?: string): string {
+  if (!claudeMd) return "";
+  return `<system-reminder>
+As you answer the user's questions, you can use the following context:
+# claudeMd
+Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.
+
+Contents of ${claudeMdPath ?? "CLAUDE.md"} (project instructions, checked into the codebase):
+
+${claudeMd}
+
+# currentDate
+Today's date is ${new Date().toISOString().split("T")[0]}.
+
+      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
+</system-reminder>`;
 }
 
 function buildIdentity(): string {
@@ -117,24 +137,6 @@ You have been invoked in the following environment:
  - Platform: ${options.platform}
  - Shell: ${options.shell}
  - You are powered by the model named ${options.model}.`;
-}
-
-// Injected as <system-reminder> before each user message
-export function wrapClaudeMd(claudeMdContent: string, filePath: string): string {
-  return `<system-reminder>
-As you answer the user's questions, you can use the following context:
-# claudeMd
-Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.
-
-Contents of ${filePath} (project instructions, checked into the codebase):
-
-${claudeMdContent}
-
-# currentDate
-Today's date is ${new Date().toISOString().split("T")[0]}.
-
-      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
-</system-reminder>`;
 }
 
 // Compaction summary prompt

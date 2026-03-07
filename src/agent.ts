@@ -1,7 +1,7 @@
 // Main agent loop — streams API calls, executes tools, handles compaction, terminates when no tool_use.
 
 import Anthropic from "@anthropic-ai/sdk";
-import { buildSystemPrompt, wrapClaudeMd } from "./prompts.ts";
+import { buildSystemPrompt } from "./prompts.ts";
 import { TOOL_SCHEMAS, executeTool, CONCURRENT_SAFE_TOOLS } from "./tools.ts";
 import { maybeCompact, compact } from "./compaction.ts";
 import { withRetry } from "./retry.ts";
@@ -78,7 +78,7 @@ export interface AgentResult {
 /**
  * Main agent loop.
  *
- * 1. Maybe compact messages (if >100k tokens used)
+ * 1. Maybe compact messages (if >50k tokens used)
  * 2. Stream API call
  * 3. If any tool_use blocks → execute tools → append tool_results → continue
  * 4. If no tool_use → return final text
@@ -103,26 +103,11 @@ export async function runAgent(
     platform,
     shell,
     model,
+    claudeMd: options.claudeMd,
+    claudeMdPath: options.claudeMdPath,
   });
 
-  // Inject CLAUDE.md on the first turn of a session, and again after compaction
-  // (compaction produces a single summary message with no prior CLAUDE.md injection).
-  // We detect "already injected" by checking if any prior user message contains the wrapper tag.
-  const alreadyInjected = (options.history ?? []).some(
-    (m) => m.role === "user" && (
-      (typeof m.content === "string" && m.content.includes("<system-reminder>")) ||
-      (Array.isArray(m.content) && m.content.some(
-        (b) => "text" in b && typeof (b as { text: string }).text === "string" && (b as { text: string }).text.includes("<system-reminder>")
-      ))
-    )
-  );
-  let userContent = prompt;
-  if (options.claudeMd && !alreadyInjected) {
-    userContent =
-      wrapClaudeMd(options.claudeMd, options.claudeMdPath ?? "CLAUDE.md") +
-      "\n" +
-      prompt;
-  }
+  const userContent = prompt;
   // Start from prior history if provided (multi-turn chat)
   const messages: Anthropic.MessageParam[] = [
     ...(options.history ?? []),
@@ -167,11 +152,17 @@ export async function runAgent(
     let forcedCompaction = false;
     const response = await withRetry(async () => {
       finalText = "";
+      const cachedTools = activeTools.length > 0
+        ? [
+            ...activeTools.slice(0, -1),
+            { ...activeTools[activeTools.length - 1]!, cache_control: { type: "ephemeral" as const } },
+          ] as Anthropic.Tool[]
+        : [] as Anthropic.Tool[];
       const stream = client.messages.stream({
         model,
         max_tokens: 8192,
-        system: systemPrompt,
-        tools: activeTools as Anthropic.Tool[],
+        system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
+        tools: cachedTools,
         messages,
       }, { signal: options.signal });
 

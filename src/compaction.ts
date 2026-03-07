@@ -4,7 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { COMPACTION_PROMPT } from "./prompts.ts";
 import { withRetry } from "./retry.ts";
 
-export const COMPACTION_TOKEN_THRESHOLD = 100_000;
+export const COMPACTION_TOKEN_THRESHOLD = 50_000;
 
 export interface CompactionResult {
   compacted: boolean;
@@ -57,8 +57,8 @@ export async function compact(
   const response = await withRetry(() =>
     client.messages.create({
       model,
-      max_tokens: 8192,
-      system: systemPrompt,
+      max_tokens: 2048,
+      system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
       messages: compactionMessages,
     })
   );
