@@ -4,7 +4,8 @@
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/qrcode-terminal": "^0.12.2"
   },
   "peerDependencies": {
     "typescript": "^5"
@@ -12,7 +13,10 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@opentui/core": "^0.1.86",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "croner": "^10.0.1",
-    "playwright": "^1.58.2"
+    "grammy": "^1.41.1",
+    "playwright": "^1.58.2",
+    "qrcode-terminal": "^0.12.0"
   }
 }

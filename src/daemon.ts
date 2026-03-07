@@ -10,6 +10,9 @@ import { setTaskExecutor } from "./tools.ts";
 import { createTaskExecutor } from "./subagent.ts";
 import { listCronJobs } from "./sessions.ts";
 import { enableDaemonLog, log } from "./daemon-log.ts";
+import { GatewayRouter } from "./gateway/router.ts";
+import { TelegramGateway } from "./gateway/telegram.ts";
+import { WhatsAppGateway } from "./gateway/whatsapp.ts";
 
 const DATA_DIR = join(process.env.HOME ?? ".", ".girlfriend");
 const PID_FILE = join(DATA_DIR, "daemon.pid");
@@ -72,6 +75,13 @@ export async function startDaemon(): Promise<void> {
     return { content: result };
   });
 
+  // Start gateways
+  const router = new GatewayRouter(client);
+  if (process.env.TELEGRAM_BOT_TOKEN) router.register(new TelegramGateway());
+  if (process.env.WHATSAPP_ALLOWED_NUMBERS !== undefined || process.env.WHATSAPP_ENABLED === "1")
+    router.register(new WhatsAppGateway());
+  await router.start();
+
   // Graceful shutdown
   let shuttingDown = false;
   async function shutdown(signal: string) {
@@ -79,6 +89,7 @@ export async function startDaemon(): Promise<void> {
     shuttingDown = true;
     log("info", `received ${signal}, shutting down`);
     stopScheduler();
+    await router.stop();
     clearPid();
     log("info", "daemon stopped");
     process.exit(0);
