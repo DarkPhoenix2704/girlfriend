@@ -91,6 +91,7 @@ export class WhatsAppGateway implements Gateway {
       version,
       auth: state,
       printQRInTerminal: false,
+      syncFullHistory: false,   // skip full history sync — avoids AwaitingInitialSync timeout
       logger: {
         level:  "silent",
         trace:  () => {},
@@ -141,17 +142,30 @@ export class WhatsAppGateway implements Gateway {
       if (type !== "notify") return;
 
       for (const msg of messages) {
-        if (msg.key.fromMe) continue;
         const jid = msg.key.remoteJid ?? "";
-        if (!jid || jid.endsWith("@g.us")) continue; // skip groups
+
+        if (msg.key.fromMe) {
+          log("info", "WhatsApp message ignored (fromMe)", { jid });
+          continue;
+        }
+        if (!jid || jid.endsWith("@g.us")) {
+          log("info", "WhatsApp message ignored (group or no jid)", { jid });
+          continue;
+        }
 
         const text = extractText(msg.message);
-        if (!text?.trim()) continue;
+        if (!text?.trim()) {
+          log("info", "WhatsApp message ignored (no extractable text)", { jid, msgTypes: Object.keys(msg.message ?? {}).join(",") });
+          continue;
+        }
 
         if (!isAllowed(jid)) {
+          log("warn", "WhatsApp message blocked (not allowed)", { jid });
           await this.sock?.sendMessage(jid, { text: "Sorry, you're not authorised." });
           continue;
         }
+
+        log("info", "WhatsApp message received", { jid, text: text.slice(0, 80) });
 
         // Mark as read so the user sees a blue tick
         try {
